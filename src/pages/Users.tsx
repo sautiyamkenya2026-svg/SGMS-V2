@@ -16,6 +16,7 @@ import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 
 type Profile = { id: string; email: string | null; display_name: string | null; avatar_url?: string | null; phone?: string | null; national_id?: string | null; address?: string | null; notes?: string | null };
 type RoleRow = { user_id: string; role: Role };
+type AIProvider = "gemini" | "groq";
 type AIKey = { id: string; provider: string; label: string; api_key: string; active: boolean; last_used_at: string | null; failure_count: number };
 type CredCount = Record<string, number>;
 
@@ -40,6 +41,24 @@ const SPECIALTY_OPTIONS = [
   "Body & Paint", "Diagnostics / OBD", "AC / Cooling", "Tyres & Alignment", "General",
 ];
 
+const AI_SETTING_DEFAULTS = {
+  gemini_api_key: "",
+  groq_api_key: "",
+  ai_default_provider: "groq" as AIProvider,
+  ai_chat_provider: "groq" as AIProvider,
+  ai_analysis_provider: "gemini" as AIProvider,
+  ai_image_provider: "gemini" as AIProvider,
+};
+
+const AI_PROVIDER_OPTIONS: Array<{ value: AIProvider; label: string }> = [
+  { value: "groq", label: "Groq" },
+  { value: "gemini", label: "Gemini" },
+];
+
+function normalizeProvider(value: string | null | undefined, fallback: AIProvider): AIProvider {
+  return value === "groq" || value === "gemini" ? value : fallback;
+}
+
 export default function Users() {
   const { hasRole, user } = useAuth();
   const isSuper = hasRole("super_admin");
@@ -55,14 +74,19 @@ export default function Users() {
   const [editing, setEditing] = useState<Profile | null>(null);
   const [editForm, setEditForm] = useState({ display_name: "", phone: "", email: "", national_id: "", address: "", notes: "" });
   const [savingEdit, setSavingEdit] = useState(false);
-  const [geminiKey, setGeminiKey] = useState("");
-  const [keyLoaded, setKeyLoaded] = useState(false);
-  const [showKey, setShowKey] = useState(false);
+  const [aiSettings, setAiSettings] = useState({ ...AI_SETTING_DEFAULTS });
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [showGroqKey, setShowGroqKey] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showNewApiKey, setShowNewApiKey] = useState(false);
-  const [savingKey, setSavingKey] = useState(false);
+  const [savingAiSettings, setSavingAiSettings] = useState(false);
   const [aiKeys, setAiKeys] = useState<AIKey[]>([]);
-  const [keyForm, setKeyForm] = useState({ provider: "gemini", label: "", api_key: "" });
+  const [keyForm, setKeyForm] = useState<{ provider: AIProvider; label: string; api_key: string }>({
+    provider: "gemini",
+    label: "",
+    api_key: "",
+  });
   const [credCounts, setCredCounts] = useState<CredCount>({});
 
   const load = async () => {
@@ -93,7 +117,7 @@ export default function Users() {
     const { error } = await supabase.from("ai_keys").insert({ ...keyForm, api_key: keyForm.api_key.trim() });
     if (error) { toast({ title: "Failed", description: error.message, variant: "destructive" }); return; }
     toast({ title: "Key added — will be used in rotation" });
-    setKeyForm({ provider: "gemini", label: "", api_key: "" });
+    setKeyForm({ provider: keyForm.provider, label: "", api_key: "" });
     loadAiKeys();
   };
 
@@ -106,22 +130,38 @@ export default function Users() {
     loadAiKeys();
   };
 
-  // Load the Gemini API key (only super_admin RLS allows this row).
+  // Load AI routing and fallback keys (only super_admin RLS allows these rows).
   useEffect(() => {
     if (!isSuper) return;
     (async () => {
-      const { data } = await supabase.from("app_settings").select("value").eq("key", "gemini_api_key").maybeSingle();
-      setGeminiKey(data?.value ?? "");
-      setKeyLoaded(true);
+      const { data } = await supabase
+        .from("app_settings")
+        .select("key, value")
+        .in("key", Object.keys(AI_SETTING_DEFAULTS));
+      const next = { ...AI_SETTING_DEFAULTS };
+      (data ?? []).forEach((row: any) => {
+        if (row?.key === "gemini_api_key") next.gemini_api_key = row.value ?? "";
+        if (row?.key === "groq_api_key") next.groq_api_key = row.value ?? "";
+        if (row?.key === "ai_default_provider") next.ai_default_provider = normalizeProvider(row.value, next.ai_default_provider);
+        if (row?.key === "ai_chat_provider") next.ai_chat_provider = normalizeProvider(row.value, next.ai_chat_provider);
+        if (row?.key === "ai_analysis_provider") next.ai_analysis_provider = normalizeProvider(row.value, next.ai_analysis_provider);
+        if (row?.key === "ai_image_provider") next.ai_image_provider = normalizeProvider(row.value, next.ai_image_provider);
+      });
+      setAiSettings(next);
+      setSettingsLoaded(true);
     })();
   }, [isSuper]);
 
-  const saveKey = async () => {
-    setSavingKey(true);
-    const { error } = await supabase.from("app_settings").upsert({ key: "gemini_api_key", value: geminiKey.trim() });
-    setSavingKey(false);
+  const saveAiSettings = async () => {
+    setSavingAiSettings(true);
+    const payload = Object.entries(aiSettings).map(([key, value]) => ({
+      key,
+      value: typeof value === "string" ? value.trim() : String(value),
+    }));
+    const { error } = await supabase.from("app_settings").upsert(payload);
+    setSavingAiSettings(false);
     if (error) { toast({ title: "Save failed", description: error.message, variant: "destructive" }); return; }
-    toast({ title: "Gemini API key updated" });
+    toast({ title: "AI routing and fallback keys updated" });
   };
 
   // Keep the UI aligned with the edge-function rules:
@@ -506,24 +546,116 @@ export default function Users() {
         <Card className="p-5 border-amber-500/40">
           <div className="flex items-center gap-2 mb-3">
             <ShieldCheck className="h-4 w-4 text-amber-500" />
-            <h3 className="font-semibold">Gemini API Key <span className="text-xs text-muted-foreground font-normal">(super admin only)</span></h3>
+            <h3 className="font-semibold">AI Routing <span className="text-xs text-muted-foreground font-normal">(super admin only)</span></h3>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
-            Used as the fallback Gemini key when no active rotation key is available. Stored in the database so you can change it without a redeploy.
+            Route fast chat, structured analysis, and image tasks to the provider you prefer. These settings are read by the edge functions at runtime.
           </p>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <Input
-              type={showKey ? "text" : "password"}
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder={keyLoaded ? "AIza..." : "Loading..."}
-              className="font-mono text-xs"
-            />
-            <Button variant="outline" type="button" onClick={() => setShowKey(s => !s)}>
-              {showKey ? "Hide" : "Show"}
-            </Button>
-            <Button onClick={saveKey} disabled={savingKey || !geminiKey.trim()} className="bg-gradient-primary">
-              {savingKey ? "Saving..." : "Save key"}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label>Default provider</Label>
+              <Select
+                value={aiSettings.ai_default_provider}
+                onValueChange={(value: AIProvider) => setAiSettings({ ...aiSettings, ai_default_provider: value })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AI_PROVIDER_OPTIONS.map((provider) => (
+                    <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Chat route</Label>
+              <Select
+                value={aiSettings.ai_chat_provider}
+                onValueChange={(value: AIProvider) => setAiSettings({ ...aiSettings, ai_chat_provider: value })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AI_PROVIDER_OPTIONS.map((provider) => (
+                    <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Analysis route</Label>
+              <Select
+                value={aiSettings.ai_analysis_provider}
+                onValueChange={(value: AIProvider) => setAiSettings({ ...aiSettings, ai_analysis_provider: value })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AI_PROVIDER_OPTIONS.map((provider) => (
+                    <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Image route</Label>
+              <Select
+                value={aiSettings.ai_image_provider}
+                onValueChange={(value: AIProvider) => setAiSettings({ ...aiSettings, ai_image_provider: value })}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AI_PROVIDER_OPTIONS.map((provider) => (
+                    <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {isSuper && (
+        <Card className="p-5 border-amber-500/40">
+          <div className="flex items-center gap-2 mb-1">
+            <KeyRound className="h-4 w-4 text-amber-500" />
+            <h3 className="font-semibold">Fallback AI Keys</h3>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            These single provider keys are used only when no active rotation key exists for that provider. You can still keep the real secrets in Supabase env vars if you prefer.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+            <div>
+              <Label>Gemini fallback key</Label>
+              <Input
+                type={showGeminiKey ? "text" : "password"}
+                value={aiSettings.gemini_api_key}
+                onChange={(e) => setAiSettings({ ...aiSettings, gemini_api_key: e.target.value })}
+                placeholder={settingsLoaded ? "AIza..." : "Loading..."}
+                className="font-mono text-xs"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button variant="outline" type="button" onClick={() => setShowGeminiKey((s) => !s)}>
+                {showGeminiKey ? "Hide" : "Show"}
+              </Button>
+            </div>
+            <div>
+              <Label>Groq fallback key</Label>
+              <Input
+                type={showGroqKey ? "text" : "password"}
+                value={aiSettings.groq_api_key}
+                onChange={(e) => setAiSettings({ ...aiSettings, groq_api_key: e.target.value })}
+                placeholder={settingsLoaded ? "gsk_..." : "Loading..."}
+                className="font-mono text-xs"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button variant="outline" type="button" onClick={() => setShowGroqKey((s) => !s)}>
+                {showGroqKey ? "Hide" : "Show"}
+              </Button>
+            </div>
+          </div>
+          <div className="mt-4">
+            <Button onClick={saveAiSettings} disabled={savingAiSettings} className="bg-gradient-primary">
+              {savingAiSettings ? "Saving..." : "Save AI settings"}
             </Button>
           </div>
         </Card>
@@ -533,13 +665,21 @@ export default function Users() {
         <Card className="p-5 border-amber-500/40">
           <div className="flex items-center gap-2 mb-1">
             <KeyRound className="h-4 w-4 text-amber-500" />
-            <h3 className="font-semibold">Gemini Key Rotation Pool</h3>
+            <h3 className="font-semibold">AI Key Rotation Pool</h3>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
             Add several API keys. When one hits its quota or fails, Tronix automatically rotates to the next active key — and starts back at the top once they've all been tried.
           </p>
-          <div className="grid gap-2 sm:grid-cols-[1fr_2fr_auto] mb-4">
-            <Input placeholder="Label (e.g. 'Gemini #1')" value={keyForm.label} onChange={e => setKeyForm({ ...keyForm, label: e.target.value })} />
+          <div className="grid gap-2 sm:grid-cols-[160px_1fr_2fr_auto] mb-4">
+            <Select value={keyForm.provider} onValueChange={(value: AIProvider) => setKeyForm({ ...keyForm, provider: value })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {AI_PROVIDER_OPTIONS.map((provider) => (
+                  <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input placeholder={`Label (e.g. '${keyForm.provider === "groq" ? "Groq" : "Gemini"} #1')`} value={keyForm.label} onChange={e => setKeyForm({ ...keyForm, label: e.target.value })} />
             <div className="relative">
               <Input
                 placeholder="API key"
@@ -560,7 +700,7 @@ export default function Users() {
             <Button onClick={addAiKey} className="bg-gradient-primary"><Plus className="h-4 w-4 mr-1" />Add</Button>
           </div>
           {aiKeys.length === 0 ? (
-            <p className="text-xs text-muted-foreground italic">No rotation keys yet. Without a pool, Tronix uses the single Gemini key above.</p>
+            <p className="text-xs text-muted-foreground italic">No rotation keys yet. Without a pool, the AI layer falls back to the single provider keys above or to Supabase secrets.</p>
           ) : (
             <table className="w-full text-sm">
               <thead><tr className="border-b text-left text-xs uppercase text-muted-foreground">

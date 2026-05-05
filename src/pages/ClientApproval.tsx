@@ -95,6 +95,7 @@ export default function ClientApproval() {
   const isDiagnosisStage = job.status === "diagnosis_approval";
   const recParts = job.recommended_parts ?? [];
   const partsTotal = recParts.reduce((s, p: any) => s + (Number(p.qty || 1) * Number(p.estimated_price || 0)), 0);
+  const approvalTotal = Number(job.invoice_amount || job.estimate || 0);
 
   return (
     <div
@@ -149,7 +150,7 @@ export default function ClientApproval() {
               <p className="pt-2 text-base"><span className="text-muted-foreground text-xs">Quotation total: </span><span className="font-bold text-primary">KSh {Number(job.estimate || 0).toLocaleString()}</span></p>
             )
           ) : (
-            <p className="pt-2 text-base"><span className="text-muted-foreground text-xs">Total: </span><span className="font-bold">KSh {Number(job.invoice_amount || 0).toLocaleString()}</span></p>
+            <p className="pt-2 text-base"><span className="text-muted-foreground text-xs">Total: </span><span className="font-bold">KSh {approvalTotal.toLocaleString()}</span></p>
           )}
         </div>
 

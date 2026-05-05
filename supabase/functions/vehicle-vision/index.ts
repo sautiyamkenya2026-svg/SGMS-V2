@@ -1,12 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { corsHeaders } from "https://esm.sh/@supabase/supabase-js@2.95.0/cors";
-import { getGeminiGenerateContentUrl, getGeminiHeaders } from "../_shared/gemini-config.ts";
-import { formatGeminiFailure } from "../_shared/gemini-error.ts";
+import { generateAIResponse, type AIMessagePart } from "../_shared/ai-router.ts";
 
-type GeminiKey = { id: string | null; key: string; failureCount: number };
-type GeminiKeyRow = { id: string; api_key: string; failure_count: number | null };
-type GeminiTextPart = { text?: string };
-type GeminiResponse = { candidates?: Array<{ content?: { parts?: GeminiTextPart[] } }> };
 type VehicleVisionProblem = { area?: string; problem?: string; severity?: string };
 type VehicleVisionResult = {
   make?: string;
@@ -41,99 +36,13 @@ async function requireUser(req: Request) {
   return data.user;
 }
 
-async function getGeminiKeyPool(): Promise<GeminiKey[]> {
-  const sb = adminClient();
-  try {
-    const { data } = await sb.from("ai_keys")
-      .select("id, api_key, failure_count, provider, active, last_used_at")
-      .eq("provider", "gemini")
-      .eq("active", true)
-      .order("last_used_at", { ascending: true, nullsFirst: true });
-    if (data?.length) {
-      return data.map((row: GeminiKeyRow) => ({
-        id: row.id,
-        key: row.api_key,
-        failureCount: Number(row.failure_count ?? 0),
-      }));
-    }
-  } catch (error) {
-    void error;
-  }
-
-  let key = "";
-  try {
-    const { data } = await sb.from("app_settings")
-      .select("value")
-      .eq("key", "gemini_api_key")
-      .maybeSingle();
-    key = data?.value ?? "";
-  } catch (error) {
-    void error;
-  }
-
-  if (!key) key = Deno.env.get("GEMINI_API_KEY") ?? "";
-  return key ? [{ id: null, key, failureCount: 0 }] : [];
-}
-
-async function callGemini(body: Record<string, unknown>) {
-  const pool = await getGeminiKeyPool();
-  if (!pool.length) throw new Error("Gemini API key not configured");
-
-  const sb = adminClient();
-  let lastError = "";
-  const url = getGeminiGenerateContentUrl();
-
-  for (const entry of pool) {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: getGeminiHeaders(entry.key),
-      body: JSON.stringify(body),
-    });
-
-    if (resp.ok) {
-      if (entry.id) {
-        sb.from("ai_keys")
-          .update({ last_used_at: new Date().toISOString(), failure_count: 0 })
-          .eq("id", entry.id)
-          .then(() => {});
-      }
-      return await resp.json();
-    }
-
-    lastError = await resp.text();
-    if (entry.id) {
-      sb.from("ai_keys")
-        .update({
-          last_used_at: new Date().toISOString(),
-          failure_count: entry.failureCount + 1,
-        })
-        .eq("id", entry.id)
-        .then(() => {});
-    }
-  }
-
-  throw new Error(formatGeminiFailure(lastError, pool.length));
-}
-
-function toImageParts(images: string[]): Array<Record<string, unknown>> {
+function toImageParts(images: string[]): AIMessagePart[] {
   return images.slice(0, 4).flatMap((url) => {
-    const dataUrl = url.match(/^data:([^;]+);base64,(.+)$/);
-    if (dataUrl) {
-      return [{ inlineData: { mimeType: dataUrl[1], data: dataUrl[2] } }];
+    if (/^(data:|https?:\/\/)/i.test(url)) {
+      return [{ type: "image_url", image_url: { url } }];
     }
-    if (/^https?:\/\//i.test(url)) {
-      return [{ text: `Reference image URL: ${url}` }];
-    }
-    return [];
+    return [{ type: "text", text: `Reference image URL: ${url}` }];
   });
-}
-
-function extractText(json: GeminiResponse) {
-  const parts = json?.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .map((part) => typeof part?.text === "string" ? part.text : "")
-    .join("")
-    .trim();
 }
 
 function parseJson(text: string) {
@@ -189,15 +98,16 @@ Deno.serve(async (req) => {
       "- Do not add markdown fences or commentary.",
     ].join("\n");
 
-    const json = await callGemini({
-      contents: [{
+    const ai = await generateAIResponse(adminClient(), {
+      taskType: "image",
+      messages: [{
         role: "user",
-        parts: [{ text: prompt }, ...toImageParts(images)],
+        content: [{ type: "text", text: prompt }, ...toImageParts(images)],
       }],
-      generationConfig: { responseMimeType: "application/json" },
+      jsonMode: "object",
     });
 
-    const parsed = parseJson(extractText(json)) as VehicleVisionResult;
+    const parsed = parseJson(ai.content) as VehicleVisionResult;
     const out = {
       make: typeof parsed?.make === "string" ? parsed.make : "",
       model: typeof parsed?.model === "string" ? parsed.model : "",

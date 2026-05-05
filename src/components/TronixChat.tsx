@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { CameraInput } from "@/components/CameraInput";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 
-type Msg = { role: "user" | "assistant"; content: string; image?: string };
+type Msg = { role: "user" | "assistant"; content: string; image?: string; meta?: string };
 
 interface Props {
   fullPage?: boolean;
@@ -62,7 +62,14 @@ export function TronixChat({ fullPage = false, className }: Props) {
         throw new Error(await readEdgeFunctionErrorMessage(error, response, "Tronix request failed."));
       }
       if (data?.error) throw new Error(data.error);
-      setMessages((m) => [...m, { role: "assistant", content: data.reply ?? "(no reply)" }]);
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: data.reply ?? "(no reply)",
+          meta: typeof data.mode === "string" ? `Tronix (${data.mode})` : undefined,
+        },
+      ]);
     } catch (e: any) {
       toast({ title: "Tronix error", description: e.message ?? String(e), variant: "destructive" });
       setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${e.message ?? "Something went wrong."}` }]);
@@ -95,6 +102,7 @@ export function TronixChat({ fullPage = false, className }: Props) {
               {m.image && <img src={m.image} alt="upload" className="mb-2 max-h-48 rounded" />}
               {m.role === "assistant" ? (
                 <div className="prose prose-sm dark:prose-invert max-w-none [&>*]:my-1">
+                  {m.meta && <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{m.meta}</p>}
                   <ReactMarkdown>{m.content}</ReactMarkdown>
                 </div>
               ) : (

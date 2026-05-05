@@ -17,7 +17,8 @@ import { canSeeCostPrices } from "@/lib/permissions";
 import { toast } from "@/hooks/use-toast";
 
 type Location = { id: string; name: string; kind: string };
-type Part = { id: string; sku: string; name: string; unit_price: number; min_stock: number; category: string | null };
+type Part = { id: string; sku: string; name: string; unit_cost: number; unit_price: number; min_stock: number; category: string | null };
+type Job = { id: string; job_no: string; plate: string };
 type Stock = { part_id: string; location_id: string; qty: number };
 type Daily = { part_id: string; location_id: string; opening: number; additional: number; sales: number };
 
@@ -40,6 +41,7 @@ export default function Stock() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [activeLoc, setActiveLoc] = useState<string>("");
   const [parts, setParts] = useState<Part[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [daily, setDaily] = useState<Daily[]>([]);
   const [search, setSearch] = useState("");
@@ -52,14 +54,16 @@ export default function Stock() {
 
   const loadAll = async () => {
     setLoading(true);
-    const [{ data: locs }, { data: pts }, { data: st }, { data: dl }] = await Promise.all([
+    const [{ data: locs }, { data: pts }, { data: activeJobs }, { data: st }, { data: dl }] = await Promise.all([
       supabase.from("locations").select("id, name, kind").order("name"),
-      supabase.from("parts").select("id, sku, name, unit_price, min_stock, category").order("name"),
+      supabase.from("parts").select("id, sku, name, unit_cost, unit_price, min_stock, category").order("name"),
+      supabase.from("jobs").select("id, job_no, plate").in("status", ["diagnosis","diagnosed","diagnosis_approval","parts","parts_approval","repair","awaiting_approval","completed"]).order("created_at", { ascending: false }).limit(200),
       supabase.from("part_stock").select("part_id, location_id, qty"),
       supabase.from("stock_daily").select("part_id, location_id, opening, additional, sales").eq("day", today),
     ]);
     setLocations(locs ?? []);
     setParts(pts ?? []);
+    setJobs((activeJobs ?? []) as Job[]);
     setStocks(st ?? []);
     setDaily(dl ?? []);
     if (!activeLoc && locs?.length) setActiveLoc(locs[0].id);
@@ -242,6 +246,7 @@ export default function Stock() {
           part={dialog.part}
           fromLocation={activeLoc}
           locations={locations}
+          jobs={jobs}
           onDone={loadAll}
         />
       )}
@@ -346,7 +351,7 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
 }
 
 function MovementDialog({
-  open, onClose, type, part, fromLocation, locations, onDone,
+  open, onClose, type, part, fromLocation, locations, jobs, onDone,
 }: {
   open: boolean;
   onClose: () => void;
@@ -354,14 +359,23 @@ function MovementDialog({
   part: Part;
   fromLocation: string;
   locations: Location[];
+  jobs: Job[];
   onDone: () => void;
 }) {
   const [qty, setQty] = useState("1");
-  const [unitPrice, setUnitPrice] = useState(String(part.unit_price));
+  const [unitPrice, setUnitPrice] = useState(String(type === "restock" ? part.unit_cost : part.unit_price));
   const [reference, setReference] = useState("");
   const [note, setNote] = useState("");
+  const [jobId, setJobId] = useState("");
   const [toLocation, setToLocation] = useState<string>(locations.find((l) => l.id !== fromLocation)?.id ?? "");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setUnitPrice(String(type === "restock" ? part.unit_cost : part.unit_price));
+    setJobId("");
+    setReference("");
+    setNote("");
+  }, [part.id, part.unit_cost, part.unit_price, type]);
 
   const titles: Record<MovementType, string> = {
     restock: "Restock / Add stock",
@@ -386,6 +400,7 @@ function MovementDialog({
       part_id: part.id,
       qty: q,
       unit_price: unitPrice ? Number(unitPrice) : null,
+      job_id: type === "sale" && jobId ? jobId : null,
       reference: reference || null,
       note: note || null,
       created_by: user?.id ?? null,
@@ -407,7 +422,11 @@ function MovementDialog({
       error = out.error?.message ?? inn?.error?.message ?? null;
     } else {
       const r = await supabase.from("stock_movements").insert({
-        ...baseRow, location_id: fromLocation, type,
+        ...baseRow,
+        location_id: fromLocation,
+        type,
+        buy_price: type === "sale" ? Number(part.unit_cost || 0) : Number(unitPrice || 0),
+        sell_price: type === "sale" ? Number(unitPrice || 0) : Number(part.unit_price || 0),
       });
       error = r.error?.message ?? null;
     }
@@ -453,6 +472,20 @@ function MovementDialog({
                 <SelectContent>
                   {locations.filter((l) => l.id !== fromLocation).map((l) => (
                     <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {type === "sale" && (
+            <div className="grid gap-2">
+              <Label>Link to job (optional)</Label>
+              <Select value={jobId || "none"} onValueChange={(value) => setJobId(value === "none" ? "" : value)}>
+                <SelectTrigger><SelectValue placeholder="Pick job card" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No linked job</SelectItem>
+                  {jobs.map((job) => (
+                    <SelectItem key={job.id} value={job.id}>{job.job_no} - {job.plate}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

@@ -34,6 +34,8 @@ type Invoice = {
 };
 
 const fmt = (n: number) => `KSh ${Number(n).toLocaleString()}`;
+const invoiceNetAmount = (invoice: Pick<Invoice, "amount" | "discount">) =>
+  Math.max(0, Number(invoice.amount || 0) - Number(invoice.discount || 0));
 const fmtTime = (s: string | null) => s ? new Date(s).toLocaleString("en-GB", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }) : "—";
 
 export default function Invoices() {
@@ -59,6 +61,7 @@ export default function Invoices() {
     const { data, error } = await supabase
       .from("invoices")
       .select("*")
+      .eq("doc_type", "invoice")
       .order("date", { ascending: false })
       .order("time_in", { ascending: false });
     if (error) toast({ title: "Could not load", description: error.message, variant: "destructive" });
@@ -84,9 +87,10 @@ export default function Invoices() {
   const totals = useMemo(() => {
     let billed = 0, paid = 0, outstanding = 0;
     for (const i of invoices) {
-      billed += Number(i.amount);
+      const net = invoiceNetAmount(i);
+      billed += net;
       paid += Number(i.amount_paid);
-      outstanding += Math.max(0, Number(i.amount) - Number(i.discount) - Number(i.amount_paid));
+      outstanding += Math.max(0, net - Number(i.amount_paid));
     }
     return { billed, paid, outstanding, count: invoices.length };
   }, [invoices]);
@@ -241,7 +245,7 @@ export default function Invoices() {
                   <td className="p-3 capitalize text-muted-foreground">{i.service_type ?? "—"}</td>
                   <td className="p-3 text-xs text-muted-foreground">{fmtTime(i.time_in)} → {fmtTime(i.time_out)}</td>
                   <td className="p-3 text-muted-foreground">{i.technicians ?? "—"}</td>
-                  <td className="p-3 text-right font-bold">{fmt(Number(i.amount))}</td>
+                  <td className="p-3 text-right font-bold">{fmt(invoiceNetAmount(i))}</td>
                   <td className="p-3 text-right">{fmt(Number(i.amount_paid))}</td>
                   <td className="p-3">{statusBadge(i.status)}</td>
                   <td className="p-3 text-right">

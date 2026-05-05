@@ -22,10 +22,13 @@ interface JobLookup {
   toolAssignments: any[];
   inspections: any[];
   gatePasses: any[];
+  jobMechanics: any[];
 }
 
 const fmt = (n: number) => `KSh ${Math.round(n).toLocaleString()}`;
 const dayKey = (iso: string) => new Date(iso).toISOString().slice(0, 10);
+const netInvoiceAmount = (invoice: { amount?: number; discount?: number }) =>
+  Math.max(0, Number(invoice.amount || 0) - Number(invoice.discount || 0));
 
 export default function Reports() {
   return (
@@ -66,8 +69,8 @@ function FinancialTab() {
     (async () => {
       const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
       const [{ data: inv }, { data: mv }, { data: pc }] = await Promise.all([
-        supabase.from("invoices").select("date, amount, amount_paid, doc_type").gte("date", since),
-        supabase.from("stock_movements").select("created_at, qty, buy_price, sell_price, type").gte("created_at", since).eq("type", "sale"),
+        supabase.from("invoices").select("date, amount, discount, amount_paid, doc_type").eq("doc_type", "invoice").gte("date", since),
+        supabase.from("stock_movements").select("created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", since).eq("type", "sale"),
         supabase.from("petty_cash_entries").select("date, amount, transaction_cost, type").gte("date", since),
       ]);
       setInvoices(inv ?? []);
@@ -89,7 +92,7 @@ function FinancialTab() {
     for (const m of movements) {
       const d = dayKey(m.created_at);
       const row = map.get(d); if (!row) continue;
-      const sell = Number(m.sell_price ?? 0) * Number(m.qty ?? 0);
+      const sell = Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0);
       const cost = Number(m.buy_price ?? 0) * Number(m.qty ?? 0);
       row.parts += sell;
       row.revenue += sell;
@@ -99,7 +102,7 @@ function FinancialTab() {
     for (const inv of invoices) {
       const d = inv.date as string;
       const row = map.get(d); if (!row) continue;
-      const lab = Number(inv.amount ?? 0);
+      const lab = netInvoiceAmount(inv);
       row.labor += lab;
       row.revenue += lab;
       labor += lab;
@@ -164,20 +167,44 @@ function MechanicsTab() {
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     (async () => {
-      const { data: jobs } = await supabase.from("jobs").select("mechanic, plate, status, started_at, completed_at, feedback_rating");
+      const [{ data: jobs }, { data: assignments }, { data: mechanics }] = await Promise.all([
+        supabase.from("jobs").select("id, mechanic, plate, status, started_at, completed_at, feedback_rating"),
+        supabase.from("job_mechanics").select("job_id, mechanic_id"),
+        supabase.from("mechanics").select("id, name"),
+      ]);
+      const mechanicNames = new Map<string, string>((mechanics ?? []).map((m: any) => [m.id, m.name]));
+      const jobMap = new Map<string, any>((jobs ?? []).map((j: any) => [j.id, j]));
       const map = new Map<string, { name: string; jobs: number; completed: number; ratingSum: number; ratingN: number; durations: number[]; plates: Set<string> }>();
-      for (const j of jobs ?? []) {
-        const name = ((j.mechanic ?? "Unassigned").trim()) || "Unassigned";
-        const r = map.get(name) ?? { name, jobs: 0, completed: 0, ratingSum: 0, ratingN: 0, durations: [], plates: new Set<string>() };
-        r.jobs++;
-        r.plates.add(j.plate);
-        if (j.completed_at) {
-          r.completed++;
-          const dur = (new Date(j.completed_at).getTime() - new Date(j.started_at).getTime()) / 3600000;
-          if (dur > 0 && dur < 24 * 30) r.durations.push(dur);
+
+      for (const assignment of assignments ?? []) {
+        const job = jobMap.get((assignment as any).job_id);
+        if (!job) continue;
+        const name = mechanicNames.get((assignment as any).mechanic_id) ?? ((job.mechanic ?? "Unassigned").trim() || "Unassigned");
+        const row = map.get(name) ?? { name, jobs: 0, completed: 0, ratingSum: 0, ratingN: 0, durations: [], plates: new Set<string>() };
+        row.jobs++;
+        row.plates.add(job.plate);
+        if (job.completed_at) {
+          row.completed++;
+          const dur = (new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 3600000;
+          if (dur > 0 && dur < 24 * 30) row.durations.push(dur);
         }
-        if (j.feedback_rating) { r.ratingSum += j.feedback_rating; r.ratingN++; }
-        map.set(name, r);
+        if (job.feedback_rating) { row.ratingSum += job.feedback_rating; row.ratingN++; }
+        map.set(name, row);
+        jobMap.delete(job.id);
+      }
+
+      for (const job of jobMap.values()) {
+        const name = ((job.mechanic ?? "Unassigned").trim()) || "Unassigned";
+        const row = map.get(name) ?? { name, jobs: 0, completed: 0, ratingSum: 0, ratingN: 0, durations: [], plates: new Set<string>() };
+        row.jobs++;
+        row.plates.add(job.plate);
+        if (job.completed_at) {
+          row.completed++;
+          const dur = (new Date(job.completed_at).getTime() - new Date(job.started_at).getTime()) / 3600000;
+          if (dur > 0 && dur < 24 * 30) row.durations.push(dur);
+        }
+        if (job.feedback_rating) { row.ratingSum += job.feedback_rating; row.ratingN++; }
+        map.set(name, row);
       }
       setRows(Array.from(map.values()).map(r => {
         const avg = r.durations.length ? r.durations.reduce((a, b) => a + b, 0) / r.durations.length : 0;
@@ -382,14 +409,18 @@ function Job360() {
       { data: toolAssignments },
       { data: inspections },
       { data: gatePasses },
+      { data: jobMechanics },
+      { data: mechanics },
     ] = await Promise.all([
       supabase.from("jobs").select("id, job_no, complaint, completed_at, created_at, status").eq("plate", job.plate).neq("id", job.id).order("created_at", { ascending: false }),
       supabase.from("stock_movements").select("*, parts(name, sku)").eq("job_id", job.id),
       supabase.from("petty_cash_entries").select("*").eq("job_id", job.id),
-      supabase.from("invoices").select("*").eq("job_id", job.id),
+      supabase.from("invoices").select("*").eq("job_id", job.id).eq("doc_type", "invoice"),
       supabase.from("tool_assignments").select("*, tools(name, code), mechanics(name)").eq("job_id", job.id),
       supabase.from("inspections").select("id, manual_done, obd_done, status, created_at").eq("job_id", job.id),
       supabase.from("gate_passes").select("*").eq("job_id", job.id),
+      supabase.from("job_mechanics").select("job_id, mechanic_id").eq("job_id", job.id),
+      supabase.from("mechanics").select("id, name"),
     ]);
 
     setData({
@@ -401,6 +432,10 @@ function Job360() {
       toolAssignments: toolAssignments ?? [],
       inspections: inspections ?? [],
       gatePasses: gatePasses ?? [],
+      jobMechanics: (jobMechanics ?? []).map((assignment: any) => ({
+        ...assignment,
+        name: (mechanics ?? []).find((m: any) => m.id === assignment.mechanic_id)?.name ?? null,
+      })),
     });
     setLoading(false);
   };
@@ -435,14 +470,18 @@ function Job360() {
 }
 
 function JobReport({ report }: { report: JobLookup }) {
-  const { job, previous, parts, petty, invoices, toolAssignments, inspections, gatePasses } = report;
+  const { job, previous, parts, petty, invoices, toolAssignments, inspections, gatePasses, jobMechanics } = report;
 
   const partsCost = parts.reduce((s, m) => s + (Number(m.buy_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const partsRevenue = parts.reduce((s, m) => s + (Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const pettyTotal = petty.reduce((s, e) => s + Number(e.amount ?? 0), 0);
-  const invoiced = invoices.reduce((s, i) => s + Number(i.amount ?? 0), 0);
+  const invoiced = invoices.reduce((s, i) => s + netInvoiceAmount(i), 0);
   const paid = invoices.reduce((s, i) => s + Number(i.amount_paid ?? 0), 0);
-  const profit = (invoiced || Number(job.estimate)) - partsCost - pettyTotal;
+  const jobTotal = invoiced || Number(job.invoice_amount || job.quotation_amount || job.estimate || 0);
+  const profit = jobTotal - partsCost - pettyTotal;
+  const mechanicLabel = jobMechanics.length > 0
+    ? jobMechanics.map((assignment: any) => assignment.name).filter(Boolean).join(", ")
+    : job.mechanic ?? "Unassigned";
 
   return (
     <div className="space-y-4">
@@ -463,7 +502,7 @@ function JobReport({ report }: { report: JobLookup }) {
       </Card>
 
       <div className="grid gap-3 md:grid-cols-5">
-        <Card className="p-4"><p className="text-xs text-muted-foreground">Estimate</p><p className="text-xl font-bold">KSh {Number(job.estimate).toLocaleString()}</p></Card>
+        <Card className="p-4"><p className="text-xs text-muted-foreground">Job total</p><p className="text-xl font-bold">KSh {jobTotal.toLocaleString()}</p></Card>
         <Card className="p-4"><p className="text-xs text-muted-foreground">Parts cost</p><p className="text-xl font-bold">KSh {partsCost.toLocaleString()}</p></Card>
         <Card className="p-4"><p className="text-xs text-muted-foreground">Parts billed</p><p className="text-xl font-bold">KSh {partsRevenue.toLocaleString()}</p></Card>
         <Card className="p-4"><p className="text-xs text-muted-foreground">Petty cash</p><p className="text-xl font-bold">KSh {pettyTotal.toLocaleString()}</p></Card>
@@ -475,7 +514,7 @@ function JobReport({ report }: { report: JobLookup }) {
           <h3 className="font-semibold flex items-center gap-2 mb-3"><Wrench className="h-4 w-4 text-primary" />People & Timeline</h3>
           <ul className="space-y-2 text-sm">
             <li>📥 <strong>Check-in:</strong> {new Date(job.started_at).toLocaleString()}</li>
-            <li>🔧 <strong>Mechanic:</strong> {job.mechanic ?? "Unassigned"}</li>
+            <li>🔧 <strong>Mechanic:</strong> {mechanicLabel}</li>
             {inspections.length > 0 && <li>🩺 <strong>Inspections:</strong> {inspections.length} ({inspections.filter(i => i.status === "finished").length} finished)</li>}
             {toolAssignments.length > 0 && (
               <li>🛠️ <strong>Tools taken:</strong>

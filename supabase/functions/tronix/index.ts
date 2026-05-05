@@ -1,7 +1,10 @@
 // Tronix — Smart Garage AI assistant (Gemini-powered)
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { getGeminiGenerateContentUrl, getGeminiHeaders } from "../_shared/gemini-config.ts";
-import { formatGeminiFailure } from "../_shared/gemini-error.ts";
+import {
+  generateAIResponse,
+  type AIProviderName,
+  type AITaskType,
+} from "../_shared/ai-router.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -326,7 +329,7 @@ async function toolPerformAction(args: any, user: UserCtx) {
   return { error: "Action not implemented." };
 }
 
-// ---- Gemini tool schemas ----
+// ---- AI tool schemas ----
 const TOOLS = [
   {
     type: "function",
@@ -361,131 +364,18 @@ const TOOLS = [
   },
 ];
 
-// Convert chat messages to Gemini REST format
-function toGemini(messages: any[]) {
-  const sys = messages.find((m) => m.role === "system");
-  const contents: any[] = [];
-  for (const m of messages) {
-    if (m.role === "system") continue;
-    if (m.role === "tool") {
-      contents.push({
-        role: "user",
-        parts: [{ functionResponse: { name: m.name ?? "tool", response: { content: m.content } } }],
-      });
-      continue;
-    }
-    const role = m.role === "assistant" ? "model" : "user";
-    const parts: any[] = [];
-    if (m.tool_calls?.length) {
-      for (const tc of m.tool_calls) {
-        let args = {};
-        try { args = JSON.parse(tc.function?.arguments ?? "{}"); } catch {}
-        parts.push({ functionCall: { name: tc.function?.name, args } });
-      }
-    } else if (Array.isArray(m.content)) {
-      for (const p of m.content) {
-        if (p.type === "text") parts.push({ text: p.text });
-        else if (p.type === "image_url") {
-          const url = p.image_url?.url ?? "";
-          const match = url.match(/^data:([^;]+);base64,(.+)$/);
-          if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
-        }
-      }
-    } else {
-      parts.push({ text: String(m.content ?? "") });
-    }
-    if (parts.length) contents.push({ role, parts });
-  }
-  const tools = [{
-    functionDeclarations: TOOLS.map((t) => ({
-      name: t.function.name,
-      description: t.function.description,
-      parameters: t.function.parameters,
-    })),
-  }];
-  return { systemInstruction: sys ? { parts: [{ text: sys.content }] } : undefined, contents, tools };
+function pickTaskType(messages: any[]): AITaskType {
+  const hasImage = messages.some((message) =>
+    Array.isArray(message?.content) &&
+    message.content.some((part: any) => part?.type === "image_url" && part?.image_url?.url)
+  );
+  return hasImage ? "image" : "fast_chat";
 }
 
-// Pull all active Gemini keys from the rotation pool, falling back to the
-// single legacy key in app_settings/env. We try keys in order and rotate on
-// quota / rate-limit / auth errors.
-async function getGeminiKeyPool(): Promise<{ id: string | null; key: string; failureCount: number }[]> {
-  const sb = adminClient();
-  try {
-    const { data } = await sb.from("ai_keys")
-      .select("id, api_key, failure_count, provider, active, last_used_at")
-      .eq("provider", "gemini").eq("active", true)
-      .order("last_used_at", { ascending: true, nullsFirst: true });
-    if (data && data.length) {
-      return data.map((r: any) => ({
-        id: r.id,
-        key: r.api_key,
-        failureCount: Number(r.failure_count ?? 0),
-      }));
-    }
-  } catch (_) { /* fall through */ }
-  // Legacy single-key fallback
-  let key = "";
-  try {
-    const { data } = await sb.from("app_settings").select("value").eq("key", "gemini_api_key").maybeSingle();
-    key = data?.value ?? "";
-  } catch (_) {}
-  if (!key) key = Deno.env.get("GEMINI_API_KEY") ?? "";
-  return key ? [{ id: null, key, failureCount: 0 }] : [];
-}
-
-async function callGemini(messages: any[]): Promise<any> {
-  const pool = await getGeminiKeyPool();
-  if (!pool.length) throw new Error("no_gemini_key");
-  const body = toGemini(messages);
-  const sb = adminClient();
-  let lastErr = "";
-  const url = getGeminiGenerateContentUrl();
-  for (const entry of pool) {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: getGeminiHeaders(entry.key),
-      body: JSON.stringify(body),
-    });
-    if (resp.ok) {
-      if (entry.id) {
-        sb.from("ai_keys").update({ last_used_at: new Date().toISOString(), failure_count: 0 }).eq("id", entry.id).then(() => {});
-      }
-      return await resp.json();
-    }
-    lastErr = await resp.text();
-    console.warn(`Gemini key failed (${entry.id ?? "legacy"}): ${resp.status}`);
-    if (entry.id) {
-      sb.from("ai_keys")
-        .update({ failure_count: entry.failureCount + 1, last_used_at: new Date().toISOString() })
-        .eq("id", entry.id)
-        .then(() => {});
-    }
-    // try the next key
-  }
-  throw new Error(formatGeminiFailure(lastErr, pool.length));
-}
-
-// Convert Gemini response to OpenAI-style assistant message
-function fromGemini(json: any) {
-  const cand = json.candidates?.[0];
-  const parts = cand?.content?.parts ?? [];
-  let text = "";
-  const tool_calls: any[] = [];
-  for (const p of parts) {
-    if (p.text) text += p.text;
-    if (p.functionCall) {
-      tool_calls.push({
-        id: `call_${tool_calls.length}_${Date.now()}`,
-        type: "function",
-        function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args ?? {}) },
-      });
-    }
-  }
-  return { role: "assistant", content: text, tool_calls: tool_calls.length ? tool_calls : undefined };
-}
-
-async function callAI(chatMessages: any[], user: UserCtx): Promise<string> {
+async function callAI(
+  chatMessages: any[],
+  user: UserCtx,
+): Promise<{ reply: string; provider: AIProviderName; modeLabel: string }> {
   // Pull the last ~30 stored messages so Tronix has long-term memory
   // across sessions, not just the current browser tab.
   const sb = adminClient();
@@ -511,14 +401,19 @@ async function callAI(chatMessages: any[], user: UserCtx): Promise<string> {
   ];
 
   for (let round = 0; round < 4; round++) {
-    const json = await callGemini(messages);
-    const msg = fromGemini(json);
-
-    if (!msg) return "(no response)";
+    const msg = await generateAIResponse(sb, {
+      taskType: pickTaskType(messages),
+      messages,
+      tools: TOOLS,
+    });
 
     const toolCalls = msg.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      return (msg.content ?? "").toString().trim() || "(no response)";
+      return {
+        reply: (msg.content ?? "").toString().trim() || "(no response)",
+        provider: msg.provider,
+        modeLabel: msg.modeLabel,
+      };
     }
 
     messages.push(msg);
@@ -538,7 +433,11 @@ async function callAI(chatMessages: any[], user: UserCtx): Promise<string> {
       });
     }
   }
-  return "I couldn't complete the request. Please try rephrasing.";
+  return {
+    reply: "I couldn't complete the request. Please try rephrasing.",
+    provider: "gemini",
+    modeLabel: "Smart Mode",
+  };
 }
 
 Deno.serve(async (req) => {
@@ -572,7 +471,8 @@ Deno.serve(async (req) => {
       ];
     }
 
-    const reply = await callAI(chatMessages, user);
+    const result = await callAI(chatMessages, user);
+    const reply = result.reply;
     // Persist this turn so future chats remember it.
     try {
       const sb = adminClient();
@@ -591,7 +491,7 @@ Deno.serve(async (req) => {
     } catch (persistErr) {
       console.warn("Failed to persist Tronix history:", persistErr);
     }
-    return new Response(JSON.stringify({ reply }), {
+    return new Response(JSON.stringify({ reply, provider: result.provider, mode: result.modeLabel }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e: any) {
