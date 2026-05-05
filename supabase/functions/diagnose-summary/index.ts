@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { formatGeminiFailure } from "../_shared/gemini-error.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -79,7 +80,7 @@ async function callGemini(body: Record<string, unknown>) {
   let lastError = "";
 
   for (const entry of pool) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${entry.key}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${entry.key}`;
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -108,7 +109,7 @@ async function callGemini(body: Record<string, unknown>) {
     }
   }
 
-  throw new Error(`All Gemini keys failed. Last error: ${lastError}`);
+  throw new Error(formatGeminiFailure(lastError, pool.length));
 }
 
 function extractText(json: GeminiResponse) {

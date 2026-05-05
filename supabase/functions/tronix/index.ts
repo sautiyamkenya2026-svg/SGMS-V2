@@ -1,5 +1,6 @@
 // Tronix — Smart Garage AI assistant (Gemini-powered)
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { formatGeminiFailure } from "../_shared/gemini-error.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -439,7 +440,7 @@ async function callGemini(messages: any[]): Promise<any> {
   const sb = adminClient();
   let lastErr = "";
   for (const entry of pool) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${entry.key}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${entry.key}`;
     const resp = await fetch(url, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
@@ -459,7 +460,7 @@ async function callGemini(messages: any[]): Promise<any> {
     }
     // try the next key
   }
-  throw new Error(`All Gemini keys failed. Last error: ${lastErr}`);
+  throw new Error(formatGeminiFailure(lastErr, pool.length));
 }
 
 // Convert Gemini response to OpenAI-style assistant message
