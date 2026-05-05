@@ -1,5 +1,6 @@
 // Tronix — Smart Garage AI assistant (Gemini-powered)
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { getGeminiGenerateContentUrl, getGeminiHeaders } from "../_shared/gemini-config.ts";
 import { formatGeminiFailure } from "../_shared/gemini-error.ts";
 
 const corsHeaders = {
@@ -439,10 +440,12 @@ async function callGemini(messages: any[]): Promise<any> {
   const body = toGemini(messages);
   const sb = adminClient();
   let lastErr = "";
+  const url = getGeminiGenerateContentUrl();
   for (const entry of pool) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${entry.key}`;
     const resp = await fetch(url, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      method: "POST",
+      headers: getGeminiHeaders(entry.key),
+      body: JSON.stringify(body),
     });
     if (resp.ok) {
       if (entry.id) {
