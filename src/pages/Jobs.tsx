@@ -21,6 +21,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
 import {
   generateInvoicePDF, generateQuotationPDF, generateReceiptPDF,
   generateJobCardPDF, generateGatePassPDF,
@@ -116,28 +117,150 @@ const elapsed = (iso: string) => {
   return `${Math.floor(h / 24)}d`;
 };
 
+const NON_MECHANIC_ROLES = ["admin", "super_admin", "director", "manager", "reception", "storekeeper"] as const;
+
+const isMechanicOnlyUser = (roles: string[] = []) =>
+  roles.includes("mechanic") && !roles.some((role) => NON_MECHANIC_ROLES.includes(role as any));
+
+const calculateLineSubtotal = (rows: Array<{ qty?: number; unit_price?: number }>) =>
+  rows.reduce((sum, row) => sum + Number(row.qty || 0) * Number(row.unit_price || 0), 0);
+
+const calculateLineTotal = (rows: Array<{ qty?: number; unit_price?: number }>, discount: number) =>
+  Math.max(0, calculateLineSubtotal(rows) - Number(discount || 0));
+
+const getJobChargeAmount = (job: Partial<Job>) =>
+  Math.max(
+    0,
+    Number(job.invoice_amount ?? 0),
+    Number(job.quotation_amount ?? 0),
+    Number(job.estimate ?? 0),
+  );
+
+const getJobPaidAmount = (job: Partial<Job>) => Math.max(0, Number(job.receipt_amount ?? 0));
+
+const isJobSettled = (job: Partial<Job>) => {
+  const total = getJobChargeAmount(job);
+  return job.status === "closed" || (total > 0 && getJobPaidAmount(job) >= total);
+};
+
+type GatePassRow = { id: string; pass_no: string; issued_at: string };
+
+async function ensureGatePass(jobId: string) {
+  const { data: existing, error: existingError } = await supabase
+    .from("gate_passes")
+    .select("id, pass_no, issued_at")
+    .eq("job_id", jobId)
+    .order("issued_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existing) return existing as GatePassRow;
+
+  const { data, error } = await supabase
+    .from("gate_passes")
+    .insert({ job_id: jobId })
+    .select("id, pass_no, issued_at")
+    .single();
+  if (error) throw error;
+  return data as GatePassRow;
+}
+
+async function downloadGatePass(job: Job, passNo: string, amountPaid: number) {
+  await generateGatePassPDF({
+    pass_no: passNo,
+    job_no: job.job_no,
+    plate: job.plate,
+    vehicle: job.vehicle_label ?? "",
+    customer_name: job.customer_name ?? "",
+    customer_phone: job.customer_phone ?? "",
+    amount_paid: amountPaid,
+    total: getJobChargeAmount(job),
+    technicians: job.mechanic ?? "",
+    issued_by: "Reception",
+    date: new Date().toLocaleString(),
+  });
+}
+
 export default function Jobs() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [openJob, setOpenJob] = useState<Job | null>(null);
   const [tab, setTab] = useState("active");
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
+    if (authLoading) return;
     setLoading(true);
-    const { data, error } = await supabase
-      .from("jobs")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) toast.error(error.message);
-    else setJobs((data ?? []) as unknown as Job[]);
+    const mechanicOnly = isMechanicOnlyUser(user?.roles ?? []);
+    if (mechanicOnly) {
+      const { data: mechanic, error: mechanicError } = await supabase
+        .from("mechanics")
+        .select("id")
+        .ilike("name", user?.displayName ?? "")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (mechanicError) {
+        toast.error(mechanicError.message);
+        setJobs([]);
+        setLoading(false);
+        return;
+      }
+      if (!mechanic?.id) {
+        setJobs([]);
+        setLoading(false);
+        return;
+      }
+
+      const [{ data: directJobs, error: directError }, { data: assignments, error: assignmentError }] = await Promise.all([
+        supabase.from("jobs").select("*").eq("assigned_mechanic_id", mechanic.id),
+        supabase.from("job_mechanics").select("job_id").eq("mechanic_id", mechanic.id),
+      ]);
+      if (directError || assignmentError) {
+        toast.error(directError?.message ?? assignmentError?.message ?? "Could not load jobs");
+        setJobs([]);
+        setLoading(false);
+        return;
+      }
+
+      const ids = Array.from(
+        new Set([
+          ...(directJobs ?? []).map((row: any) => row.id),
+          ...((assignments ?? []) as Array<{ job_id: string }>).map((row) => row.job_id),
+        ]),
+      );
+      if (ids.length === 0) {
+        setJobs([]);
+        setLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("jobs")
+        .select("*")
+        .in("id", ids)
+        .order("created_at", { ascending: false });
+      if (error) toast.error(error.message);
+      else setJobs((data ?? []) as unknown as Job[]);
+    } else {
+      const { data, error } = await supabase
+        .from("jobs")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) toast.error(error.message);
+      else setJobs((data ?? []) as unknown as Job[]);
+    }
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!authLoading) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, user?.id, user?.displayName, (user?.roles ?? []).join("|")]);
 
   const updateStatus = async (id: string, status: JobStatus) => {
     const patch: any = { status };
     if (status === "completed") patch.completed_at = new Date().toISOString();
+    if (status === "closed") patch.closed_at = new Date().toISOString();
     const { error } = await supabase.from("jobs").update(patch).eq("id", id);
     if (error) toast.error(error.message);
     else { toast.success(`Moved to ${status}`); load(); }
@@ -235,25 +358,27 @@ export default function Jobs() {
 }
 
 function BillingRow({ job, onOpen, onChange }: { job: Job; onOpen: () => void; onChange: () => void }) {
+  const totalDue = getJobChargeAmount(job);
+  const amountPaid = getJobPaidAmount(job);
+  const settled = isJobSettled(job);
+
   const issueGatePass = async () => {
-    const { data, error } = await supabase
-      .from("gate_passes")
-      .insert({ job_id: job.id })
-      .select()
-      .single();
-    if (error) { toast.error(error.message); return; }
-    await supabase.from("jobs").update({ gate_pass_issued: true, status: "closed", closed_at: new Date().toISOString() }).eq("id", job.id);
-    await generateGatePassPDF({
-      pass_no: data.pass_no,
-      job_no: job.job_no,
-      plate: job.plate,
-      vehicle: job.vehicle_label ?? "",
-      customer_name: job.customer_name ?? "",
-      customer_phone: job.customer_phone ?? "",
-      amount_paid: job.estimate,
-      issued_by: "Reception",
-      date: new Date().toLocaleString(),
-    });
+    if (!settled) {
+      toast.error("Record full payment before issuing the gate pass");
+      return;
+    }
+    try {
+      const gatePass = await ensureGatePass(job.id);
+      await supabase.from("jobs").update({
+        gate_pass_issued: true,
+        status: "closed",
+        closed_at: new Date().toISOString(),
+      }).eq("id", job.id);
+      await downloadGatePass(job, gatePass.pass_no, amountPaid || totalDue);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not issue gate pass");
+      return;
+    }
     toast.success("Gate pass issued — drive safely!");
     onChange();
   };
@@ -270,9 +395,16 @@ function BillingRow({ job, onOpen, onChange }: { job: Job; onOpen: () => void; o
         </div>
       </div>
       <div className="flex items-center gap-3">
-        <span className="font-bold text-sm">KSh {Number(job.estimate).toLocaleString()}</span>
+        <span className="font-bold text-sm">KSh {Number(totalDue).toLocaleString()}</span>
         {job.gate_pass_issued ? (
-          <Badge className="bg-success">Gate pass issued</Badge>
+          <>
+            <Badge className="bg-success">Gate pass issued</Badge>
+            <Button size="sm" variant="outline" onClick={issueGatePass}>
+              <ShieldCheck className="h-3 w-3 mr-1" />Reprint
+            </Button>
+          </>
+        ) : !settled ? (
+          <Badge variant="outline">Awaiting payment</Badge>
         ) : (
           <Button size="sm" className="bg-gradient-primary" onClick={issueGatePass}>
             <ShieldCheck className="h-3 w-3 mr-1" />Issue gate pass
@@ -607,6 +739,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const [lineItems, setLineItems] = useState<any[]>([]);
   const [partsCatalog, setPartsCatalog] = useState<any[]>([]);
   const [partStock, setPartStock] = useState<Record<string, number>>({});
+  const [reportedProblem, setReportedProblem] = useState("");
   const [discountAmt, setDiscountAmt] = useState("0");
   const [discountReason, setDiscountReason] = useState("");
   const [workPerformed, setWorkPerformed] = useState("");
@@ -628,6 +761,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     const { data: j } = await supabase.from("jobs").select("*").eq("id", jobId).maybeSingle();
     setJob(j as any);
     if (j) {
+      setReportedProblem((j as any).reported_problem ?? (j as any).complaint ?? "");
       setDiscountAmt(String((j as any).discount_amount ?? 0));
       setDiscountReason((j as any).discount_reason ?? "");
       setWorkPerformed((j as any).work_performed ?? "");
@@ -717,9 +851,9 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const partsCost = partsUsed.reduce((s, m) => s + (Number(m.buy_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const partsRevenue = partsUsed.reduce((s, m) => s + (Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const pettyTotal = pettyForJob.reduce((s, e) => s + Number(e.amount ?? 0), 0);
-  const lineSubtotal = lineItems.reduce((s, l) => s + Number(l.qty || 0) * Number(l.unit_price || 0), 0);
+  const lineSubtotal = calculateLineSubtotal(lineItems);
   const discount = Number(discountAmt || 0);
-  const lineTotal = Math.max(0, lineSubtotal - discount);
+  const lineTotal = calculateLineTotal(lineItems, discount);
   const profit = lineSubtotal - partsCost - pettyTotal;
 
   // ===== STRICT DOC GATING (real garage flow) =====
@@ -752,12 +886,13 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const runAiSummary = async () => {
     setAiBusy(true);
     try {
+        const diagnosticFindings = findings.filter((f: any) => f.status && f.status !== "ok" && !isServiceCategory(f.category));
         const { data, error, response } = await supabase.functions.invoke("diagnose-summary", {
           body: {
             vehicle: job.vehicle_label ?? "",
             plate: job.plate,
           reported_problem: job.reported_problem ?? job.complaint ?? "",
-          findings,
+          findings: diagnosticFindings,
           obd_codes: obdCodes,
         },
       });
@@ -778,7 +913,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
         await supabase.from("job_line_items").delete().eq("job_id", jobId).in("source", ["ai", "inspection"]);
         const seed: any[] = [];
         let pos = 0;
-        for (const f of findings.filter((x: any) => x.status && x.status !== "ok")) {
+        for (const f of diagnosticFindings) {
           seed.push({
             job_id: jobId, kind: "part", source: "inspection", position: pos++,
             description: `${f.part}${f.subpart ? " · " + f.subpart : ""} — ${f.note || f.status}`,
@@ -830,22 +965,38 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   // ===== Line-item editor =====
   const addLine = async (kind: "part" | "labour") => {
     const pos = lineItems.length;
-    const { error } = await supabase.from("job_line_items").insert({
+    const { data, error } = await supabase.from("job_line_items").insert({
       job_id: jobId, kind, source: "manual", position: pos,
       description: kind === "labour" ? "Labour" : "",
       qty: 1, unit_price: 0,
-    });
-    if (error) toast.error(error.message); else load();
+    }).select().single();
+    if (error) {
+      toast.error(error.message);
+    } else if (data) {
+      const next = [...lineItems, data];
+      setLineItems(next);
+      await persistFinancialSnapshot({ rows: next, silent: true });
+    }
   };
   const updateLine = async (id: string, patch: any) => {
     const next = lineItems.map((l) => l.id === id ? { ...l, ...patch } : l);
     setLineItems(next);
     const { error } = await supabase.from("job_line_items").update(patch).eq("id", id);
-    if (error) toast.error(error.message);
+    if (error) {
+      toast.error(error.message);
+    } else {
+      await persistFinancialSnapshot({ rows: next, silent: true });
+    }
   };
   const removeLine = async (id: string) => {
+    const next = lineItems.filter((l) => l.id !== id);
     const { error } = await supabase.from("job_line_items").delete().eq("id", id);
-    if (error) toast.error(error.message); else load();
+    if (error) {
+      toast.error(error.message);
+    } else {
+      setLineItems(next);
+      await persistFinancialSnapshot({ rows: next, silent: true });
+    }
   };
   const pickPartForLine = async (id: string, partId: string) => {
     const part = partsCatalog.find((p) => p.id === partId);
@@ -859,51 +1010,147 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     if (!inStock) toast.message(`${part.name} is out of stock — set price manually`);
   };
 
-  const saveFinancialMeta = async () => {
-    const { error } = await supabase.from("jobs").update({
-      discount_amount: Number(discountAmt || 0),
+  const syncLinkedInvoice = async (jobSnapshot: Job, rows: any[], subtotal: number, total: number, amountPaidValue: number) => {
+    const invoiceStatus = amountPaidValue >= total && total > 0
+      ? "paid"
+      : subtotal > 0 || total > 0
+        ? "issued"
+        : "draft";
+    const docDateSource = jobSnapshot.paid_at || jobSnapshot.completed_at || jobSnapshot.started_at || new Date().toISOString();
+    const payload: any = {
+      invoice_no: jobSnapshot.job_no,
+      plate: jobSnapshot.plate,
+      vehicle_id: (jobSnapshot as any).vehicle_id ?? null,
+      client_id: (jobSnapshot as any).client_id ?? null,
+      service_type: jobSnapshot.service_type ?? "service",
+      parts_source: "job_card",
+      time_in: jobSnapshot.started_at,
+      time_out: jobSnapshot.completed_at ?? jobSnapshot.paid_at ?? null,
+      date: String(docDateSource).slice(0, 10),
+      amount: subtotal,
+      discount,
+      discount_by: discountReason || null,
+      amount_paid: amountPaidValue,
+      technicians: jobSnapshot.mechanic ?? null,
+      customer_phone: jobSnapshot.customer_phone ?? null,
+      status: invoiceStatus,
+      notes: workPerformed || reportedProblem || jobSnapshot.complaint || null,
+      job_id: jobSnapshot.id,
+      doc_type: "invoice",
+    };
+
+    const { data: existingRows, error: existingError } = await supabase
+      .from("invoices")
+      .select("id")
+      .eq("job_id", jobSnapshot.id)
+      .eq("doc_type", "invoice")
+      .order("created_at", { ascending: true })
+      .limit(1);
+    if (existingError) throw existingError;
+
+    let invoiceId = existingRows?.[0]?.id ?? null;
+    if (invoiceId) {
+      const { error } = await supabase.from("invoices").update(payload).eq("id", invoiceId);
+      if (error) throw error;
+    } else {
+      const { data, error } = await supabase.from("invoices").insert(payload).select("id").single();
+      if (error) throw error;
+      invoiceId = data?.id ?? null;
+    }
+    if (!invoiceId) return;
+
+    const { error: clearError } = await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
+    if (clearError) throw clearError;
+
+    const itemRows = rows.length > 0
+      ? rows
+      : [{
+          kind: "labour",
+          description: `${jobSnapshot.service_type ?? "Service"} - ${reportedProblem || (jobSnapshot.complaint ?? "Workshop services")}`,
+          qty: 1,
+          unit_price: subtotal || Number(jobSnapshot.estimate || 0),
+        }];
+
+    const { error: itemError } = await supabase.from("invoice_items").insert(
+      itemRows.map((row: any) => ({
+        invoice_id: invoiceId,
+        kind: row.kind ?? "part",
+        description: row.description,
+        qty: Number(row.qty || 0),
+        unit_price: Number(row.unit_price || 0),
+      })),
+    );
+    if (itemError) throw itemError;
+  };
+
+  const persistFinancialSnapshot = async ({
+    rows = lineItems,
+    amountPaidValue = Number(amountPaid || 0),
+    extraJobPatch = {},
+    silent = true,
+  }: {
+    rows?: any[];
+    amountPaidValue?: number;
+    extraJobPatch?: Record<string, any>;
+    silent?: boolean;
+  } = {}) => {
+    if (!job) return null;
+    const subtotal = calculateLineSubtotal(rows);
+    const total = calculateLineTotal(rows, discount);
+    const patch: any = {
+      discount_amount: discount,
       discount_reason: discountReason || null,
       work_performed: workPerformed || null,
-      quotation_amount: lineSubtotal,
-      invoice_amount: canInvoice ? lineTotal : 0,
-      receipt_amount: canReceipt ? Number(amountPaid || 0) : 0,
-    }).eq("id", jobId);
-    if (error) toast.error(error.message); else { toast.success("Saved"); load(); }
+      quotation_amount: subtotal,
+      invoice_amount: total,
+      receipt_amount: Math.max(0, Number(amountPaidValue || 0)),
+      ...extraJobPatch,
+    };
+
+    const { error } = await supabase.from("jobs").update(patch).eq("id", jobId);
+    if (error) {
+      toast.error(error.message);
+      return null;
+    }
+
+    const snapshot = { ...job, ...patch } as Job;
+    setJob(snapshot);
+    try {
+      await syncLinkedInvoice(snapshot, rows, subtotal, total, Math.max(0, Number(amountPaidValue || 0)));
+    } catch (e: any) {
+      toast.error(e?.message ?? "Saved the job, but invoice sync failed");
+    }
+
+    if (!silent) toast.success("Saved");
+    return snapshot;
+  };
+
+  const saveFinancialMeta = async () => {
+    const saved = await persistFinancialSnapshot({ silent: false });
+    if (saved) load();
   };
 
   const markPaid = async () => {
     if (!canInvoice) { toast.error("Mark the job complete before recording payment"); return; }
     if (Number(amountPaid || 0) < lineTotal) { toast.error("Amount paid is less than total"); return; }
-    await supabase.from("jobs").update({
-      status: "closed",
-      paid_at: new Date().toISOString(),
-      closed_at: new Date().toISOString(),
-      receipt_amount: Number(amountPaid || 0),
-      invoice_amount: lineTotal,
-      quotation_amount: lineSubtotal,
-      discount_amount: discount,
-      discount_reason: discountReason || null,
-      work_performed: workPerformed || null,
-    }).eq("id", jobId);
-    // Auto-generate gate pass + receipt PDF immediately ("minimum input, maximum output")
+    const now = new Date().toISOString();
+    const snapshot = await persistFinancialSnapshot({
+      amountPaidValue: Number(amountPaid || 0),
+      extraJobPatch: {
+        status: "closed",
+        paid_at: now,
+        closed_at: now,
+        gate_pass_issued: true,
+      },
+      silent: true,
+    });
+    if (!snapshot) return;
     try {
-      const { data: gp } = await supabase
-        .from("gate_passes").insert({ job_id: jobId }).select().single();
-      await supabase.from("jobs").update({ gate_pass_issued: true }).eq("id", jobId);
+      const gatePass = await ensureGatePass(jobId);
       // Trigger PDFs in parallel — receipt and gate pass
       await Promise.all([
         generateReceiptPDF({ ...buildDocData("receipt"), payment_mode: paymentMode.toUpperCase() }),
-        gp ? generateGatePassPDF({
-          pass_no: gp.pass_no,
-          job_no: job.job_no,
-          plate: job.plate,
-          vehicle: job.vehicle_label ?? "",
-          customer_name: job.customer_name ?? "",
-          customer_phone: job.customer_phone ?? "",
-          amount_paid: Number(amountPaid || 0),
-          issued_by: "Reception",
-          date: new Date().toLocaleString(),
-        }) : Promise.resolve(),
+        downloadGatePass(snapshot, gatePass.pass_no, Number(amountPaid || 0)),
       ]);
       toast.success("Paid — receipt & gate pass downloaded");
     } catch (e: any) {
@@ -918,10 +1165,11 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       toast.error("Describe what you did under 'Work performed' first");
       return;
     }
-    await supabase.from("jobs").update({
-      status: "awaiting_approval",
-      work_performed: workPerformed,
-    }).eq("id", jobId);
+    const saved = await persistFinancialSnapshot({
+      extraJobPatch: { status: "awaiting_approval" },
+      silent: true,
+    });
+    if (!saved) return;
     await copyApprovalLink();
     toast.success("Status set to 'Awaiting client approval' — link copied");
     load();
@@ -1059,17 +1307,30 @@ Golden Automotive Solutions`);
     if (!forwardMechId) { toast.error("Pick a mechanic"); return; }
     const m = mechanicsList.find(x => x.id === forwardMechId);
     const newStatus: JobStatus = job.status === "diagnosed" || job.status === "parts" ? "repair" : job.status;
-    await supabase.from("jobs").update({
+    const { error } = await supabase.from("jobs").update({
       assigned_mechanic_id: forwardMechId,
       mechanic: m?.name ?? null,
       status: newStatus,
     }).eq("id", jobId);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    await supabase.from("job_mechanics").update({ role_on_job: "assist" }).eq("job_id", jobId).neq("mechanic_id", forwardMechId);
+    await supabase.from("job_mechanics").upsert(
+      { job_id: jobId, mechanic_id: forwardMechId, role_on_job: "lead" },
+      { onConflict: "job_id,mechanic_id" },
+    );
     toast.success(`Forwarded to ${m?.name ?? "mechanic"}`);
     setForwardOpen(false);
     load();
   };
 
-  const issueCount = findings.filter((f) => f.status && f.status !== "ok").length;
+  const diagnosticFindings = findings.filter((f) => f.status && f.status !== "ok" && !isServiceCategory(f.category));
+  const serviceFindings = findings.filter(
+    (f) => isServiceCategory(f.category) && (f.status !== "ok" || f.last_service || f.next_due || f.note),
+  );
+  const issueCount = diagnosticFindings.length;
 
   const allowedNext = NEXT_STATUSES[job.status] ?? [];
   const statusOptions: JobStatus[] = statusOverride && canManageJob
@@ -1256,7 +1517,8 @@ Golden Automotive Solutions`);
               {canManageJob ? (
                 <Textarea
                   rows={3}
-                  defaultValue={job.reported_problem ?? job.complaint ?? ""}
+                  value={reportedProblem}
+                  onChange={(e) => setReportedProblem(e.target.value)}
                   onBlur={async (e) => {
                     const val = e.target.value;
                     if (val === (job.reported_problem ?? job.complaint ?? "")) return;
@@ -1374,11 +1636,22 @@ Golden Automotive Solutions`);
               <p className="text-sm text-muted-foreground">No faults recorded yet. Run an inspection.</p>
             ) : (
               <div className="space-y-2">
-                {findings.filter((f) => f.status !== "ok").map((f) => (
+                {diagnosticFindings.map((f) => (
                   <div key={f.id} className="flex items-start justify-between gap-3 rounded-md border p-2 bg-muted/30">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{f.system} → {f.part}{f.subpart ? ` · ${f.subpart}` : ""}</p>
-                      <p className="text-xs text-muted-foreground">{f.note || f.status}</p>
+                      <p className="text-sm font-medium truncate">
+                        {getInspectionSystemLabel(f.system)} {f.subpart ? `-> ${f.subpart}` : `-> ${f.part}`}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {[
+                          f.note || f.status?.toUpperCase?.() || f.status,
+                          f.action_required ? `Action: ${f.action_required}` : null,
+                          f.assigned_technician ? `Tech: ${f.assigned_technician}` : null,
+                          f.estimated_cost != null ? `Est. cost: ${f.estimated_cost}` : null,
+                          f.time_estimate_minutes != null ? `${f.time_estimate_minutes} min` : null,
+                          f.client_authorized ? "Client approved" : null,
+                        ].filter(Boolean).join(" | ")}
+                      </p>
                     </div>
                     <Badge variant="outline" className={`text-[10px] shrink-0 ${
                       f.severity === "high" ? "border-destructive text-destructive"
@@ -1389,6 +1662,38 @@ Golden Automotive Solutions`);
               </div>
             )}
           </Card>
+
+          {serviceFindings.length > 0 && (
+            <Card className="p-5">
+              <h3 className="font-semibold flex items-center gap-2 mb-3"><ClipboardList className="h-4 w-4 text-primary" />Regular service ({serviceFindings.length})</h3>
+              <div className="space-y-2">
+                {serviceFindings.map((f) => (
+                  <div key={f.id} className="rounded-md border p-2 bg-muted/30">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {getInspectionSystemLabel(f.system)} {f.subpart ? `-> ${f.subpart}` : `-> ${f.part}`}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {[
+                            `Status: ${String(f.status ?? "ok").toUpperCase()}`,
+                            f.last_service ? `Last service: ${f.last_service}` : null,
+                            f.next_due ? `Next due: ${f.next_due}` : null,
+                            f.note ? `Remarks: ${f.note}` : null,
+                          ].filter(Boolean).join(" | ")}
+                        </p>
+                      </div>
+                      <Badge variant="outline" className={`text-[10px] shrink-0 ${
+                        f.status === "faulty" ? "border-destructive text-destructive"
+                        : f.status === "attention" ? "border-yellow-500 text-yellow-700"
+                        : ""
+                      }`}>{String(f.status ?? "ok").toUpperCase()}</Badge>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {obdCodes.length > 0 && (
             <Card className="p-5">
@@ -1566,7 +1871,9 @@ Golden Automotive Solutions`);
                 onDownload={() => generateJobCardPDF({
                   job_no: job.job_no, plate: job.plate, vehicle: job.vehicle_label ?? "",
                   customer_name: job.customer_name ?? "", customer_phone: job.customer_phone ?? "",
-                  customer_complaint: job.reported_problem ?? job.complaint ?? "", technicians: job.mechanic ?? "",
+                  customer_complaint: reportedProblem || (job.complaint ?? ""),
+                  technician_diagnosis: [job.ai_diagnostic_summary?.trim(), workPerformed.trim() ? `Work performed: ${workPerformed.trim()}` : ""].filter(Boolean).join("\n\n"),
+                  technicians: job.mechanic ?? "",
                   paint_color_code: job.paint_color_code ?? undefined,
                 })}
               />

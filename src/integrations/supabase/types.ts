@@ -239,9 +239,16 @@ export type Database = {
       }
       inspection_findings: {
         Row: {
+          action_required: string | null
+          assigned_technician: string | null
+          category: string | null
+          client_authorized: boolean
           created_at: string
+          estimated_cost: number | null
           id: string
           inspection_id: string
+          last_service: string | null
+          next_due: string | null
           note: string | null
           part: string
           photo_url: string | null
@@ -249,11 +256,19 @@ export type Database = {
           status: string
           subpart: string | null
           system: string
+          time_estimate_minutes: number | null
         }
         Insert: {
+          action_required?: string | null
+          assigned_technician?: string | null
+          category?: string | null
+          client_authorized?: boolean
           created_at?: string
+          estimated_cost?: number | null
           id?: string
           inspection_id: string
+          last_service?: string | null
+          next_due?: string | null
           note?: string | null
           part: string
           photo_url?: string | null
@@ -261,11 +276,19 @@ export type Database = {
           status?: string
           subpart?: string | null
           system: string
+          time_estimate_minutes?: number | null
         }
         Update: {
+          action_required?: string | null
+          assigned_technician?: string | null
+          category?: string | null
+          client_authorized?: boolean
           created_at?: string
+          estimated_cost?: number | null
           id?: string
           inspection_id?: string
+          last_service?: string | null
+          next_due?: string | null
           note?: string | null
           part?: string
           photo_url?: string | null
@@ -273,6 +296,7 @@ export type Database = {
           status?: string
           subpart?: string | null
           system?: string
+          time_estimate_minutes?: number | null
         }
         Relationships: [
           {

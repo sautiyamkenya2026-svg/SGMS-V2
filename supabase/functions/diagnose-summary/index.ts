@@ -1,17 +1,20 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { getGeminiGenerateContentUrl, getGeminiHeaders } from "../_shared/gemini-config.ts";
-import { formatGeminiFailure } from "../_shared/gemini-error.ts";
+import { generateAIResponse } from "../_shared/ai-router.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-type GeminiKey = { id: string | null; key: string; failureCount: number };
-type GeminiKeyRow = { id: string; api_key: string; failure_count: number | null };
-type GeminiTextPart = { text?: string };
-type GeminiResponse = { candidates?: Array<{ content?: { parts?: GeminiTextPart[] } }> };
-type Finding = { severity?: string; system?: string; part?: string; subpart?: string; note?: string; status?: string };
+type Finding = {
+  category?: string;
+  severity?: string;
+  system?: string;
+  part?: string;
+  subpart?: string;
+  note?: string;
+  status?: string;
+};
 type OBDCode = { code?: string; severity?: string; system?: string; meaning?: string };
 type SummaryPart = { name?: string; qty?: number | string; reason?: string; severity?: string };
 type SummaryResult = { summary?: string; parts?: SummaryPart[] };
@@ -37,88 +40,6 @@ async function requireUser(req: Request) {
   const { data, error } = await authClient().auth.getUser(token);
   if (error || !data?.user) return null;
   return data.user;
-}
-
-async function getGeminiKeyPool(): Promise<GeminiKey[]> {
-  const sb = adminClient();
-  try {
-    const { data } = await sb.from("ai_keys")
-      .select("id, api_key, failure_count, provider, active, last_used_at")
-      .eq("provider", "gemini")
-      .eq("active", true)
-      .order("last_used_at", { ascending: true, nullsFirst: true });
-    if (data?.length) {
-      return data.map((row: GeminiKeyRow) => ({
-        id: row.id,
-        key: row.api_key,
-        failureCount: Number(row.failure_count ?? 0),
-      }));
-    }
-  } catch (error) {
-    void error;
-  }
-
-  let key = "";
-  try {
-    const { data } = await sb.from("app_settings")
-      .select("value")
-      .eq("key", "gemini_api_key")
-      .maybeSingle();
-    key = data?.value ?? "";
-  } catch (error) {
-    void error;
-  }
-
-  if (!key) key = Deno.env.get("GEMINI_API_KEY") ?? "";
-  return key ? [{ id: null, key, failureCount: 0 }] : [];
-}
-
-async function callGemini(body: Record<string, unknown>) {
-  const pool = await getGeminiKeyPool();
-  if (!pool.length) throw new Error("Gemini API key not configured");
-
-  const sb = adminClient();
-  let lastError = "";
-  const url = getGeminiGenerateContentUrl();
-
-  for (const entry of pool) {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: getGeminiHeaders(entry.key),
-      body: JSON.stringify(body),
-    });
-
-    if (resp.ok) {
-      if (entry.id) {
-        sb.from("ai_keys")
-          .update({ last_used_at: new Date().toISOString(), failure_count: 0 })
-          .eq("id", entry.id)
-          .then(() => {});
-      }
-      return await resp.json();
-    }
-
-    lastError = await resp.text();
-    if (entry.id) {
-      sb.from("ai_keys")
-        .update({
-          last_used_at: new Date().toISOString(),
-          failure_count: entry.failureCount + 1,
-        })
-        .eq("id", entry.id)
-        .then(() => {});
-    }
-  }
-
-  throw new Error(formatGeminiFailure(lastError, pool.length));
-}
-
-function extractText(json: GeminiResponse) {
-  const parts = json?.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .map((part) => typeof part?.text === "string" ? part.text : "")
-    .join("")
-    .trim();
 }
 
 function parseJson(text: string) {
@@ -152,13 +73,16 @@ Deno.serve(async (req) => {
       findings = [],
       obd_codes = [],
     } = body ?? {};
+    const diagnosticFindings = findings.filter(
+      (finding) => finding.status && finding.status !== "ok" && finding.category !== "service",
+    );
 
     const prompt = `
 Vehicle: ${vehicle} (${plate})
 Reported problem: ${reported_problem || "(not provided)"}
 
 Manual inspection findings (issues only):
-    ${findings.length === 0 ? "(none)" : findings.map((f, i) =>
+    ${diagnosticFindings.length === 0 ? "(none)" : diagnosticFindings.map((f, i) =>
   `${i + 1}. [${f.severity ?? "medium"}] ${f.system} -> ${f.part}${f.subpart ? " / " + f.subpart : ""} - ${f.note || f.status}`
 ).join("\n")}
 
@@ -185,17 +109,18 @@ Rules:
 - Do not add markdown fences or commentary.
 `.trim();
 
-    const data = await callGemini({
-      contents: [
+    const ai = await generateAIResponse(adminClient(), {
+      taskType: "analysis",
+      messages: [
         {
           role: "user",
-          parts: [{ text: prompt }],
+          content: prompt,
         },
       ],
-      generationConfig: { responseMimeType: "application/json" },
+      jsonMode: "object",
     });
 
-    const parsed = parseJson(extractText(data)) as SummaryResult;
+    const parsed = parseJson(ai.content) as SummaryResult;
     const out = {
       requested_by: user.id,
       summary: typeof parsed?.summary === "string" ? parsed.summary : "",

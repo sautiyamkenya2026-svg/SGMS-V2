@@ -328,12 +328,20 @@ CREATE TABLE IF NOT EXISTS public.inspections (
 CREATE TABLE IF NOT EXISTS public.inspection_findings (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   inspection_id uuid NOT NULL REFERENCES public.inspections(id) ON DELETE CASCADE,
+  category text,
   system text NOT NULL,
   part text NOT NULL,
   subpart text,
   status text NOT NULL DEFAULT 'ok',
   severity text,
+  last_service text,
+  next_due text,
   note text,
+  action_required text,
+  estimated_cost numeric,
+  assigned_technician text,
+  time_estimate_minutes integer,
+  client_authorized boolean NOT NULL DEFAULT false,
   photo_url text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -612,6 +620,16 @@ ALTER TABLE public.inspections
   ADD COLUMN IF NOT EXISTS client_id uuid REFERENCES public.clients(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS vehicle_id uuid REFERENCES public.vehicles(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS job_id uuid REFERENCES public.jobs(id) ON DELETE SET NULL;
+
+ALTER TABLE public.inspection_findings
+  ADD COLUMN IF NOT EXISTS category text,
+  ADD COLUMN IF NOT EXISTS last_service text,
+  ADD COLUMN IF NOT EXISTS next_due text,
+  ADD COLUMN IF NOT EXISTS action_required text,
+  ADD COLUMN IF NOT EXISTS estimated_cost numeric,
+  ADD COLUMN IF NOT EXISTS assigned_technician text,
+  ADD COLUMN IF NOT EXISTS time_estimate_minutes integer,
+  ADD COLUMN IF NOT EXISTS client_authorized boolean NOT NULL DEFAULT false;
 
 ALTER TABLE public.jobs
   ADD COLUMN IF NOT EXISTS has_insurance boolean NOT NULL DEFAULT false,
