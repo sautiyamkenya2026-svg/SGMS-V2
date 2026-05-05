@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { CameraInput } from "@/components/CameraInput";
+import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 
 type Msg = { role: "user" | "assistant"; content: string; image?: string };
 
@@ -51,13 +52,15 @@ export function TronixChat({ fullPage = false, className }: Props) {
     setImage(null);
     setLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("tronix", {
+      const { data, error, response } = await supabase.functions.invoke("tronix", {
         body: {
           messages: next.map(({ role, content }) => ({ role, content })),
           image: sentImage,
         },
       });
-      if (error) throw error;
+      if (error) {
+        throw new Error(await readEdgeFunctionErrorMessage(error, response, "Tronix request failed."));
+      }
       if (data?.error) throw new Error(data.error);
       setMessages((m) => [...m, { role: "assistant", content: data.reply ?? "(no reply)" }]);
     } catch (e: any) {

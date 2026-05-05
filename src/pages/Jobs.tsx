@@ -20,6 +20,7 @@ import { InspectionWizard } from "@/components/InspectionWizard";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
+import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import {
   generateInvoicePDF, generateQuotationPDF, generateReceiptPDF,
   generateJobCardPDF, generateGatePassPDF,
@@ -335,9 +336,11 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
     if (imgs.length === 0) { toast.error("Take at least one vehicle photo first"); return; }
     setAiBusy(true);
     try {
-      const { data, error } = await supabase.functions.invoke("vehicle-vision", { body: { images: imgs } });
+      const { data, error, response } = await supabase.functions.invoke("vehicle-vision", { body: { images: imgs } });
       if (error || (data as any)?.error) {
-        toast.error((data as any)?.error ?? error?.message ?? "AI failed");
+        const message = (data as any)?.error
+          ?? await readEdgeFunctionErrorMessage(error, response, "AI failed");
+        toast.error(message);
         return;
       }
       setAiResult(data);
@@ -749,17 +752,19 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const runAiSummary = async () => {
     setAiBusy(true);
     try {
-      const { data, error } = await supabase.functions.invoke("diagnose-summary", {
-        body: {
-          vehicle: job.vehicle_label ?? "",
-          plate: job.plate,
+        const { data, error, response } = await supabase.functions.invoke("diagnose-summary", {
+          body: {
+            vehicle: job.vehicle_label ?? "",
+            plate: job.plate,
           reported_problem: job.reported_problem ?? job.complaint ?? "",
           findings,
           obd_codes: obdCodes,
         },
       });
-      if (error) throw error;
-      const recParts = (data?.parts ?? []).map((p: any) => ({ ...p, requested: false }));
+        if (error) {
+          throw new Error(await readEdgeFunctionErrorMessage(error, response, "AI failed"));
+        }
+        const recParts = (data?.parts ?? []).map((p: any) => ({ ...p, requested: false }));
       await supabase.from("jobs").update({
         ai_diagnostic_summary: data?.summary ?? "",
         recommended_parts: recParts as any,

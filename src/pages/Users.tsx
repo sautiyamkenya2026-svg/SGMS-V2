@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, type Role } from "@/lib/auth";
+import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 
 type Profile = { id: string; email: string | null; display_name: string | null; avatar_url?: string | null; phone?: string | null; national_id?: string | null; address?: string | null; notes?: string | null };
 type RoleRow = { user_id: string; role: Role };
@@ -123,8 +124,11 @@ export default function Users() {
     toast({ title: "Gemini API key updated" });
   };
 
-  // Roles selectable: super_admin only by super_admin
-  const allRoles: Role[] = ["reception", "mechanic", "storekeeper", "gateman", "manager", "director", "admin", ...(isSuper ? ["super_admin" as Role] : [])];
+  // Keep the UI aligned with the edge-function rules:
+  // only super_admins can create director/admin/super_admin accounts.
+  const allRoles: Role[] = isSuper
+    ? ["reception", "mechanic", "storekeeper", "gateman", "manager", "director", "admin", "super_admin"]
+    : ["reception", "mechanic", "storekeeper", "gateman", "manager"];
 
   // Filter visible users: hide super_admins from normal admins
   const visible = profiles.filter(p => {
@@ -157,7 +161,7 @@ export default function Users() {
     }
     setCreating(true);
     try {
-      const { data, error } = await supabase.functions.invoke("admin-create-user", {
+      const { data, error, response } = await supabase.functions.invoke("admin-create-user", {
         body: {
           email: form.email,
           password: form.password,
@@ -166,7 +170,9 @@ export default function Users() {
         },
       });
       if (error || (data as any)?.error) {
-        toast({ title: "Create failed", description: (data as any)?.error ?? error?.message, variant: "destructive" });
+        const message = (data as any)?.error
+          ?? await readEdgeFunctionErrorMessage(error, response, "Create failed");
+        toast({ title: "Create failed", description: message, variant: "destructive" });
         return;
       }
       const newId = (data as any)?.user_id as string | undefined;
