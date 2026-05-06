@@ -13,6 +13,7 @@ import { Bar, BarChart, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGri
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
 
 interface JobLookup {
   job: any;
@@ -83,12 +84,12 @@ function FinancialTab() {
       const sinceIso = new Date(Date.now() - 21 * 24 * 3600 * 1000).toISOString();
       const sinceDay = sinceIso.slice(0, 10);
       const [{ data: docRows }, { data: mv }, { data: pc }] = await Promise.all([
-        supabase.from("invoices").select("doc_type, amount, amount_paid, date, updated_at, discount").limit(1000),
-        supabase.from("stock_movements").select("created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", sinceIso).eq("type", "sale"),
+        supabase.from("invoices").select("id, job_id, plate, invoice_no, doc_type, amount, amount_paid, date, updated_at, created_at, discount").limit(1000),
+        supabase.from("stock_movements").select("id, reference, created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", sinceIso).eq("type", "sale"),
         supabase.from("petty_cash_entries").select("date, amount, transaction_cost, type").gte("date", sinceDay),
       ]);
-      setDocuments(docRows ?? []);
-      setMovements(mv ?? []);
+      setDocuments(canonicalizeDocuments(docRows ?? []));
+      setMovements(canonicalizeGeneratedMovements(mv ?? []));
       setPetty(pc ?? []);
       setLoading(false);
     })();
@@ -313,11 +314,12 @@ function PartsTab() {
     (async () => {
       const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
       const { data } = await supabase.from("stock_movements")
-        .select("part_id, qty, type, job_id, parts(name, sku)")
+        .select("id, reference, part_id, qty, type, job_id, parts(name, sku)")
         .gte("created_at", since);
+      const movementRows = canonicalizeGeneratedMovements((data ?? []) as any[]);
       const map = new Map<string, { name: string; sku: string; sold: number }>();
       const susp: any[] = [];
-      for (const m of (data ?? []) as any[]) {
+      for (const m of movementRows as any[]) {
         if (m.type === "sale") {
           const k = m.part_id;
           const cur = map.get(k) ?? { name: m.parts?.name ?? "—", sku: m.parts?.sku ?? "", sold: 0 };
@@ -445,15 +447,15 @@ function AuditTab() {
     (async () => {
       const [{ data: jobs }, { data: mv }, { data: gp }, { data: inv }] = await Promise.all([
         supabase.from("jobs").select("job_no, plate, status, created_at").order("created_at", { ascending: false }).limit(20),
-        supabase.from("stock_movements").select("type, qty, created_at, parts(name)").order("created_at", { ascending: false }).limit(20),
+        supabase.from("stock_movements").select("id, reference, type, qty, created_at, parts(name)").order("created_at", { ascending: false }).limit(50),
         supabase.from("gate_passes").select("pass_no, issued_at").order("issued_at", { ascending: false }).limit(10),
-        supabase.from("invoices").select("invoice_no, doc_type, amount, created_at").order("created_at", { ascending: false }).limit(20),
+        supabase.from("invoices").select("id, job_id, invoice_no, doc_type, amount, created_at, updated_at").order("created_at", { ascending: false }).limit(50),
       ]);
       const events: any[] = [];
       (jobs ?? []).forEach((j: any) => events.push({ time: j.created_at, action: `Job ${j.job_no} (${j.plate}) — ${j.status}`, user: "Jobs" }));
-      (mv ?? []).forEach((m: any) => events.push({ time: m.created_at, action: `Stock ${m.type}: ${m.parts?.name ?? "—"} × ${m.qty}`, user: "Inventory" }));
+      canonicalizeGeneratedMovements(mv ?? []).forEach((m: any) => events.push({ time: m.created_at, action: `Stock ${m.type}: ${m.parts?.name ?? "—"} × ${m.qty}`, user: "Inventory" }));
       (gp ?? []).forEach((g: any) => events.push({ time: g.issued_at, action: `Gate pass ${g.pass_no} issued`, user: "Gate" }));
-      (inv ?? []).forEach((i: any) => events.push({ time: i.created_at, action: `${i.doc_type ?? "invoice"} ${i.invoice_no ?? ""} — KSh ${Number(i.amount).toLocaleString()}`, user: "Billing" }));
+      canonicalizeDocuments(inv ?? []).forEach((i: any) => events.push({ time: i.created_at, action: `${i.doc_type ?? "invoice"} ${i.invoice_no ?? ""} — KSh ${Number(i.amount).toLocaleString()}`, user: "Billing" }));
       events.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
       setItems(events.slice(0, 50));
       setLoading(false);
@@ -525,9 +527,9 @@ function Job360() {
     setData({
       job,
       previous: previous ?? [],
-      parts: parts ?? [],
+      parts: canonicalizeGeneratedMovements(parts ?? []),
       petty: petty ?? [],
-      invoices: invoices ?? [],
+      invoices: canonicalizeDocuments(invoices ?? []),
       toolAssignments: toolAssignments ?? [],
       inspections: inspections ?? [],
       gatePasses: gatePasses ?? [],

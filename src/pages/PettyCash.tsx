@@ -64,10 +64,8 @@ export default function PettyCash() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  const today = new Date().toISOString().slice(0, 10);
-  const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-  const [fromDate, setFromDate] = useState<string>(monthAgo);
-  const [toDate, setToDate] = useState<string>(today);
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const [form, setForm] = useState({
     date: new Date().toISOString().slice(0, 10),
     type: "payment" as Entry["type"],
@@ -120,6 +118,7 @@ export default function PettyCash() {
         );
     });
   }, [entries, search, fromDate, toDate]);
+  const hasFilters = Boolean(search.trim() || fromDate || toDate);
 
   const totals = useMemo(() => {
     let opening = 0, payments = 0, topups = 0, paymentTxnCost = 0, bankCharges = 0;
@@ -467,6 +466,9 @@ export default function PettyCash() {
           <Download className="h-4 w-4 mr-2" />Download report
         </Button>
       </div>
+      <p className="text-xs text-muted-foreground">
+        {hasFilters ? `Showing ${filtered.length} of ${entries.length} entries.` : `Showing all ${entries.length} entries.`} Leave the date filters blank to see the full petty cash book.
+      </p>
 
       <Card>
         <div className="overflow-x-auto">
@@ -487,7 +489,7 @@ export default function PettyCash() {
             {loading ? (
               <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">Loading…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">No entries</td></tr>
+              <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">{entries.length === 0 ? "No entries" : "No entries match the current search/date filters."}</td></tr>
             ) : filtered.map(e => {
               const parts = splitContact(e.details);
               const contact = e.contact ?? parts.contact;

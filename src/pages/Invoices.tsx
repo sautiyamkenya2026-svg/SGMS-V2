@@ -12,6 +12,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { generateDepositInvoicePDF, generateInvoicePDF, generateQuotationPDF, generateReceiptPDF } from "@/lib/pdf-templates";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { canonicalizeDocuments } from "@/lib/generated-records";
 
 type DocumentType = "quotation" | "deposit_invoice" | "invoice" | "receipt";
 
@@ -153,7 +154,7 @@ export default function Invoices() {
       .order("date", { ascending: false })
       .order("created_at", { ascending: false });
     if (error) toast({ title: "Could not load documents", description: error.message, variant: "destructive" });
-    else setDocuments((data ?? []) as DocumentRow[]);
+    else setDocuments(canonicalizeDocuments((data ?? []) as DocumentRow[]));
     setLoading(false);
   };
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import { friendlyErrorMessage } from "@/lib/app-error";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
+import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
 import {
   generateInvoicePDF, generateQuotationPDF, generateReceiptPDF,
   generateDepositInvoicePDF, generateJobCardPDF, generateGatePassPDF,
@@ -74,6 +75,11 @@ const STATUS_ORDER: Record<JobStatus, number> = {
 
 const isIssuedPartMovement = (movement: any) =>
   ["sale", "transfer_out", "issue", "out"].includes(String(movement?.type ?? ""));
+
+const parseLineNumberInput = (value: string) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 interface Job {
   id: string;
@@ -1257,6 +1263,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const [jobPhotos, setJobPhotos] = useState<Array<{ kind: string; url: string }>>([]);
   const [serviceKitFuel, setServiceKitFuel] = useState<"petrol" | "diesel">("petrol");
   const [serviceKitSelection, setServiceKitSelection] = useState<string[]>([]);
+  const financialSyncQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [mechanicsList, setMechanicsList] = useState<Array<{ id: string; name: string; phone: string | null; specialties: string[] }>>([]);
   const [forwardOpen, setForwardOpen] = useState(false);
   const [forwardSpecialty, setForwardSpecialty] = useState<string>("all");
@@ -1315,14 +1322,16 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     } else {
       setJobPhotos([]);
     }
-    setPartsUsed((m ?? []).filter((row: any) => isIssuedPartMovement(row)));
+    const movementRows = canonicalizeGeneratedMovements((m ?? []) as any[]);
+    const invoiceRows = canonicalizeDocuments((inv ?? []) as any[]);
+    setPartsUsed(movementRows.filter((row: any) => isIssuedPartMovement(row)));
     setPettyForJob(p ?? []);
-    setInvoicesForJob(inv ?? []);
+    setInvoicesForJob(invoiceRows);
     setLineItems(li ?? []);
     setPartsCatalog(cat ?? []);
-    const paymentDoc = (inv ?? []).find((row: any) => row.doc_type === "receipt")
-      ?? (inv ?? []).find((row: any) => row.doc_type === "invoice")
-      ?? (inv ?? []).find((row: any) => row.doc_type === "deposit_invoice");
+    const paymentDoc = invoiceRows.find((row: any) => row.doc_type === "receipt")
+      ?? invoiceRows.find((row: any) => row.doc_type === "invoice")
+      ?? invoiceRows.find((row: any) => row.doc_type === "deposit_invoice");
     if (paymentDoc?.payment_mode) setPaymentMode(String(paymentDoc.payment_mode));
     if (paymentDoc?.payment_reference) setPaymentReference(String(paymentDoc.payment_reference));
     const stockMap: Record<string, number> = {};
@@ -1657,13 +1666,31 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       row.kind === "part" && row.part_id && !row.part_request_id && Number(row.qty || 0) > 0,
     );
 
-    const { error: clearError } = await supabase
+    const references = saleRows.map((row) => `job-line:${row.id}`);
+    if (references.length === 0) {
+      const { error: clearError } = await supabase
+        .from("stock_movements")
+        .delete()
+        .eq("job_id", jobSnapshot.id)
+        .like("reference", "job-line:%");
+      if (clearError) throw clearError;
+      return;
+    }
+
+    const { data: existingMovements, error: existingError } = await supabase
       .from("stock_movements")
-      .delete()
+      .select("id, reference")
       .eq("job_id", jobSnapshot.id)
       .like("reference", "job-line:%");
-    if (clearError) throw clearError;
-    if (saleRows.length === 0) return;
+    if (existingError) throw existingError;
+
+    const staleIds = (existingMovements ?? [])
+      .filter((movement: any) => !references.includes(String(movement.reference ?? "")))
+      .map((movement: any) => movement.id as string);
+    if (staleIds.length > 0) {
+      const { error: deleteError } = await supabase.from("stock_movements").delete().in("id", staleIds);
+      if (deleteError) throw deleteError;
+    }
 
     const { data: primaryLocation } = await supabase
       .from("locations")
@@ -1702,7 +1729,9 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       };
     });
 
-    const { error } = await supabase.from("stock_movements").insert(movementPayload);
+    const { error } = await supabase
+      .from("stock_movements")
+      .upsert(movementPayload, { onConflict: "reference" });
     if (error) throw error;
   };
 
@@ -1880,16 +1909,13 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
     for (const document of documents) {
       keepKinds.add(document.kind);
-      const existingId = existingByKind.get(document.kind) ?? null;
-      let invoiceId = existingId;
-      if (existingId) {
-        const { error } = await supabase.from("invoices").update(document.payload).eq("id", existingId);
-        if (error) throw error;
-      } else {
-        const { data, error } = await supabase.from("invoices").insert(document.payload).select("id").single();
-        if (error) throw error;
-        invoiceId = data.id;
-      }
+      const { data, error } = await supabase
+        .from("invoices")
+        .upsert(document.payload, { onConflict: "job_id,doc_type" })
+        .select("id")
+        .single();
+      if (error) throw error;
+      const invoiceId = data.id ?? existingByKind.get(document.kind) ?? null;
       if (invoiceId) await syncInvoiceItems(invoiceId, document.items);
     }
 
@@ -1904,7 +1930,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     }
   };
 
-  const persistFinancialSnapshot = async ({
+  const persistFinancialSnapshotNow = async ({
     rows = lineItems,
     amountPaidValue = Math.max(0, Number(amountPaid || 0)),
     extraJobPatch = {},
@@ -1952,6 +1978,20 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
     if (!silent) toast.success("Saved");
     return snapshot;
+  };
+
+  const persistFinancialSnapshot = async (options: {
+    rows?: any[];
+    amountPaidValue?: number;
+    extraJobPatch?: Record<string, any>;
+    silent?: boolean;
+  } = {}) => {
+    const run = financialSyncQueueRef.current
+      .catch(() => undefined)
+      .then(() => persistFinancialSnapshotNow(options));
+
+    financialSyncQueueRef.current = run.then(() => undefined, () => undefined);
+    return run;
   };
 
   const saveFinancialMeta = async () => {
@@ -3101,6 +3141,9 @@ function LineItemRow({
   onPickPart: (partId: string) => void;
 }) {
   const [search, setSearch] = useState("");
+  const [descriptionDraft, setDescriptionDraft] = useState(line.description ?? "");
+  const [qtyDraft, setQtyDraft] = useState(String(line.qty ?? 0));
+  const [unitPriceDraft, setUnitPriceDraft] = useState(String(line.unit_price ?? 0));
   const isLabour = line.kind === "labour";
   const filtered = useMemo(() => {
     if (isLabour) return [];
@@ -3111,8 +3154,36 @@ function LineItemRow({
     ).slice(0, 8);
   }, [search, parts, isLabour]);
 
+  useEffect(() => {
+    setDescriptionDraft(line.description ?? "");
+  }, [line.id, line.description]);
+
+  useEffect(() => {
+    setQtyDraft(String(line.qty ?? 0));
+  }, [line.id, line.qty]);
+
+  useEffect(() => {
+    setUnitPriceDraft(String(line.unit_price ?? 0));
+  }, [line.id, line.unit_price]);
+
   const inStock = line.part_id ? (stock[line.part_id] ?? 0) > 0 : null;
-  const lineTotal = Number(line.qty || 0) * Number(line.unit_price || 0);
+  const lineTotal = parseLineNumberInput(qtyDraft) * parseLineNumberInput(unitPriceDraft);
+
+  const commitDescription = () => {
+    if (descriptionDraft !== (line.description ?? "")) onUpdate({ description: descriptionDraft });
+  };
+
+  const commitQty = () => {
+    const nextQty = parseLineNumberInput(qtyDraft);
+    setQtyDraft(String(nextQty));
+    if (nextQty !== Number(line.qty || 0)) onUpdate({ qty: nextQty });
+  };
+
+  const commitUnitPrice = () => {
+    const nextUnitPrice = parseLineNumberInput(unitPriceDraft);
+    setUnitPriceDraft(String(nextUnitPrice));
+    if (nextUnitPrice !== Number(line.unit_price || 0)) onUpdate({ unit_price: nextUnitPrice });
+  };
 
   return (
     <div className="rounded-md border p-3 bg-muted/20 space-y-2">
@@ -3167,20 +3238,31 @@ function LineItemRow({
         <Input
           className="col-span-7 h-8 text-sm"
           placeholder={isLabour ? "Labour description (e.g. Brake bleeding)" : "Description"}
-          value={line.description ?? ""}
-          onChange={(e) => onUpdate({ description: e.target.value })}
-          onBlur={(e) => onUpdate({ description: e.target.value })}
+          value={descriptionDraft}
+          onChange={(e) => setDescriptionDraft(e.target.value)}
+          onBlur={commitDescription}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
         />
         <Input
           className="col-span-2 h-8 text-sm" type="number" min={0} step={1}
-          value={line.qty}
-          onChange={(e) => onUpdate({ qty: Number(e.target.value) })}
+          value={qtyDraft}
+          onChange={(e) => setQtyDraft(e.target.value)}
+          onBlur={commitQty}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
           placeholder="Qty"
         />
         <Input
           className="col-span-3 h-8 text-sm" type="number" min={0}
-          value={line.unit_price}
-          onChange={(e) => onUpdate({ unit_price: Number(e.target.value) })}
+          value={unitPriceDraft}
+          onChange={(e) => setUnitPriceDraft(e.target.value)}
+          onBlur={commitUnitPrice}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
           placeholder="Unit price"
         />
       </div>

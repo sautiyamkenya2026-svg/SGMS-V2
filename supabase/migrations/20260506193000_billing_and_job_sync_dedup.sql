@@ -5,11 +5,16 @@ WITH ranked_invoices AS (
   SELECT
     id,
     ROW_NUMBER() OVER (
-      PARTITION BY job_id, doc_type
+      PARTITION BY
+        CASE
+          WHEN job_id IS NOT NULL THEN 'job:' || job_id::text || ':' || COALESCE(doc_type, '')
+          WHEN NULLIF(BTRIM(invoice_no), '') IS NOT NULL THEN 'invoice:' || UPPER(BTRIM(invoice_no))
+          WHEN NULLIF(BTRIM(plate), '') IS NOT NULL THEN 'plate:' || regexp_replace(UPPER(BTRIM(plate)), '\s+', '', 'g') || ':' || COALESCE(doc_type, '')
+          ELSE 'row:' || id::text
+        END
       ORDER BY updated_at DESC, created_at DESC, id DESC
     ) AS rn
   FROM public.invoices
-  WHERE job_id IS NOT NULL
 )
 DELETE FROM public.invoices
 WHERE id IN (
@@ -19,7 +24,12 @@ WHERE id IN (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS invoices_job_id_doc_type_unique
-  ON public.invoices (job_id, doc_type);
+  ON public.invoices (job_id, doc_type)
+  WHERE job_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS invoices_invoice_no_unique
+  ON public.invoices ((UPPER(BTRIM(invoice_no))))
+  WHERE NULLIF(BTRIM(invoice_no), '') IS NOT NULL;
 
 WITH ranked_job_line_movements AS (
   SELECT
