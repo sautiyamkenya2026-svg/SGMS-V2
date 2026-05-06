@@ -25,6 +25,7 @@ ALTER TABLE public.petty_cash_entries
   ADD COLUMN IF NOT EXISTS transaction_time text;
 
 DROP POLICY IF EXISTS "Super admins read job card photos" ON public.job_card_photos;
+DROP POLICY IF EXISTS "Admins read job card photos" ON public.job_card_photos;
 CREATE POLICY "Admins read job card photos"
   ON public.job_card_photos FOR SELECT
   TO authenticated
@@ -36,6 +37,7 @@ CREATE POLICY "Admins read job card photos"
   );
 
 DROP POLICY IF EXISTS "Super admins read job-card-photos" ON storage.objects;
+DROP POLICY IF EXISTS "Admins read job-card-photos" ON storage.objects;
 CREATE POLICY "Admins read job-card-photos"
   ON storage.objects FOR SELECT
   TO authenticated
