@@ -1,11 +1,12 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, ShieldCheck, Users, ClipboardList, DoorOpen, Fingerprint } from "lucide-react";
+import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, ShieldCheck, Users, ClipboardList, DoorOpen, Fingerprint, Battery } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter, useSidebar,
 } from "@/components/ui/sidebar";
 import { useAuth, type Role } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
+import { useEffect, useState } from "react";
 import logo from "@/assets/golden-logo.png";
 
 type Item = { title: string; url: string; icon: any; roles?: Role[] };
@@ -32,6 +33,26 @@ export function AppSidebar() {
   const collapsed = state === "collapsed";
   const { pathname } = useLocation();
   const { user, logout, hasRole } = useAuth();
+  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
+  const [batteryCharging, setBatteryCharging] = useState<boolean>(false);
+
+  useEffect(() => {
+    if ('getBattery' in navigator) {
+      (navigator as any).getBattery().then((battery: any) => {
+        const updateBattery = () => {
+          setBatteryLevel(Math.round(battery.level * 100));
+          setBatteryCharging(battery.charging);
+        };
+        updateBattery();
+        battery.addEventListener('levelchange', updateBattery);
+        battery.addEventListener('chargingchange', updateBattery);
+        return () => {
+          battery.removeEventListener('levelchange', updateBattery);
+          battery.removeEventListener('chargingchange', updateBattery);
+        };
+      });
+    }
+  }, []);
 
   const handleNav = () => { if (isMobile) setOpenMobile(false); };
 
@@ -85,6 +106,13 @@ export function AppSidebar() {
             <p className="text-[11px] text-sidebar-foreground/60 capitalize">
               {isSuper ? "operator" : (user.roles[0] ?? "user").replace("_"," ")}
             </p>
+            {batteryLevel !== null && (
+              <div className="flex items-center gap-1 mt-1">
+                <Battery className={`h-3 w-3 ${batteryCharging ? 'text-green-500' : batteryLevel < 20 ? 'text-red-500' : 'text-sidebar-foreground/60'}`} />
+                <span className="text-[10px] text-sidebar-foreground/60">{batteryLevel}%</span>
+                {batteryCharging && <span className="text-[10px] text-green-500">⚡</span>}
+              </div>
+            )}
           </div>
         )}
         <Button

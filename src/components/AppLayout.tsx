@@ -71,7 +71,7 @@ export function AppLayout({ children }: { children?: ReactNode }) {
       <div
         className="flex min-h-screen w-full bg-background"
         style={{
-          paddingTop: "var(--safe-area-top)",
+          paddingTop: "max(var(--safe-area-top), 1rem)",
           paddingBottom: "var(--safe-area-bottom)",
         }}
       >

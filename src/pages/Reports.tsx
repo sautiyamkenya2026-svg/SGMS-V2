@@ -72,7 +72,7 @@ function FinancialTab() {
       const sinceDay = sinceIso.slice(0, 10);
       const [{ data: jobRows }, { data: docRows }, { data: mv }, { data: pc }] = await Promise.all([
         supabase.from("jobs").select("started_at, completed_at, invoice_amount, receipt_amount, deposit_paid").gte("started_at", sinceIso),
-        supabase.from("invoices").select("doc_type, amount, amount_paid, date, updated_at").gte("date", sinceDay),
+        supabase.from("invoices").select("doc_type, amount, amount_paid, date, updated_at, discount").gte("date", sinceDay),
         supabase.from("stock_movements").select("created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", sinceIso).eq("type", "sale"),
         supabase.from("petty_cash_entries").select("date, amount, transaction_cost, type").gte("date", sinceDay),
       ]);
@@ -102,16 +102,14 @@ function FinancialTab() {
       partsRevenue += sell;
       partsCost += cost;
     }
-    for (const job of jobs) {
-      const d = dayKey(job.completed_at ?? job.started_at);
-      const row = map.get(d); if (!row) continue;
-      const amount = Math.max(0, Number(job.invoice_amount || 0));
-      row.billed += amount;
-      billed += amount;
-    }
     for (const doc of documents) {
       const d = dayKey(doc.updated_at ?? doc.date);
       const row = map.get(d); if (!row) continue;
+      if (doc.doc_type === "invoice") {
+        const invoiceAmount = netInvoiceAmount(doc);
+        row.billed += invoiceAmount;
+        billed += invoiceAmount;
+      }
       const received = doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice"
         ? Number(doc.amount_paid || 0)
         : 0;
@@ -235,26 +233,28 @@ function MechanicsTab() {
   if (loading) return <p className="text-center text-muted-foreground py-8">Loading…</p>;
   return (
     <Card>
-      <table className="w-full text-sm">
-        <thead><tr className="border-b text-left text-xs uppercase text-muted-foreground">
-          <th className="p-3">Mechanic</th><th className="p-3 text-right">Jobs</th>
-          <th className="p-3 text-right">Completed</th><th className="p-3 text-right">Avg time</th>
-          <th className="p-3 text-right">Comebacks</th><th className="p-3 text-right">Rating</th>
-        </tr></thead>
-        <tbody>
-          {rows.length === 0 ? <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No mechanic data yet.</td></tr>
-            : rows.map(m => (
-            <tr key={m.name} className="border-b last:border-0 hover:bg-muted/40">
-              <td className="p-3 font-medium flex items-center gap-2"><Users className="h-4 w-4 text-muted-foreground" />{m.name}</td>
-              <td className="p-3 text-right font-bold">{m.jobs}</td>
-              <td className="p-3 text-right">{m.completed}</td>
-              <td className="p-3 text-right">{m.avgTime}</td>
-              <td className="p-3 text-right">{m.comebacks > 2 ? <Badge variant="destructive">{m.comebacks}</Badge> : m.comebacks}</td>
-              <td className="p-3 text-right flex items-center justify-end gap-1"><Star className="h-3 w-3 fill-warning text-warning" />{m.rating}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="border-b text-left text-xs uppercase text-muted-foreground">
+            <th className="p-3">Mechanic</th><th className="p-3 text-right">Jobs</th>
+            <th className="p-3 text-right">Completed</th><th className="p-3 text-right">Avg time</th>
+            <th className="p-3 text-right">Comebacks</th><th className="p-3 text-right">Rating</th>
+          </tr></thead>
+          <tbody>
+            {rows.length === 0 ? <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No mechanic data yet.</td></tr>
+              : rows.map(m => (
+              <tr key={m.name} className="border-b last:border-0 hover:bg-muted/40">
+                <td className="p-3 font-medium flex items-center gap-2"><Users className="h-4 w-4 text-muted-foreground" />{m.name}</td>
+                <td className="p-3 text-right font-bold">{m.jobs}</td>
+                <td className="p-3 text-right">{m.completed}</td>
+                <td className="p-3 text-right">{m.avgTime}</td>
+                <td className="p-3 text-right">{m.comebacks > 2 ? <Badge variant="destructive">{m.comebacks}</Badge> : m.comebacks}</td>
+                <td className="p-3 text-right flex items-center justify-end gap-1"><Star className="h-3 w-3 fill-warning text-warning" />{m.rating}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   );
 }
