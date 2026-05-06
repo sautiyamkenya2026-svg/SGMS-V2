@@ -39,6 +39,25 @@ const readAsDataUrl = (file: File) =>
     reader.readAsDataURL(file);
   });
 
+const sanitiseAssistantContent = (content: string) => {
+  const original = content.trim();
+  if (!original) return content;
+
+  let cleaned = original
+    .replace(/^<([a-z_][\w-]*)>\s*/i, "")
+    .replace(/\s*<\/([a-z_][\w-]*)>$/i, "")
+    .replace(/^<\/?function>\s*/gim, "")
+    .replace(/^<[^>\n]+>\s*/gm, "")
+    .replace(/^.*\b(?:read_data|perform_action)\b.*$/gim, "")
+    .trim();
+
+  if ((cleaned.startsWith("\"") && cleaned.endsWith("\"")) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+
+  return cleaned || original;
+};
+
 export function TronixChat({ fullPage = false, className }: Props) {
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -75,7 +94,7 @@ export function TronixChat({ fullPage = false, className }: Props) {
         .filter((row: any) => row.role === "user" || row.role === "assistant")
         .map((row: any) => ({
           role: row.role as "user" | "assistant",
-          content: row.content,
+          content: row.role === "assistant" ? sanitiseAssistantContent(row.content) : row.content,
           createdAt: row.created_at,
         }));
 
@@ -181,6 +200,7 @@ export function TronixChat({ fullPage = false, className }: Props) {
         .map((message) => ({
           role: message.role,
           content: message.content,
+          images: message.role === "user" ? message.images : undefined,
         }));
 
       const { data, error, response } = await invokeEdgeFunction("tronix", {
@@ -198,7 +218,7 @@ export function TronixChat({ fullPage = false, className }: Props) {
         ...prev,
         {
           role: "assistant",
-          content: data.reply ?? "(no reply)",
+          content: sanitiseAssistantContent(data.reply ?? "(no reply)"),
         },
       ]);
     } catch (e: any) {

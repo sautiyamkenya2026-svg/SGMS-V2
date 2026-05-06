@@ -180,7 +180,8 @@ export default function Suppliers() {
       </div>
 
       <Card>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[860px] text-sm">
           <thead>
             <tr className="border-b text-left text-xs uppercase text-muted-foreground">
               <th className="p-3">Supplier</th>
@@ -220,6 +221,7 @@ export default function Suppliers() {
             })}
           </tbody>
         </table>
+        </div>
       </Card>
 
       {/* Payment dialog */}

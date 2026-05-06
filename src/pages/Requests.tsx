@@ -161,7 +161,8 @@ export default function Requests() {
       </div>
 
       <Card>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[860px] text-sm">
           <thead><tr className="border-b text-left text-xs uppercase text-muted-foreground">
             <th className="p-3">When</th><th className="p-3">Mechanic</th><th className="p-3">Kind</th>
             <th className="p-3">Item</th><th className="p-3 text-right">Qty</th><th className="p-3">Status</th>
@@ -213,6 +214,7 @@ export default function Requests() {
             ))}
           </tbody>
         </table>
+        </div>
       </Card>
     </div>
   );

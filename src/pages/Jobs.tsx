@@ -59,6 +59,18 @@ const STATUS_LABEL: Record<JobStatus, string> = {
   closed: "Closed",
 };
 
+const STATUS_ORDER: Record<JobStatus, number> = {
+  diagnosis: 0,
+  diagnosed: 1,
+  diagnosis_approval: 2,
+  parts: 3,
+  parts_approval: 4,
+  repair: 5,
+  awaiting_approval: 6,
+  completed: 7,
+  closed: 8,
+};
+
 interface Job {
   id: string;
   job_no: string;
@@ -545,6 +557,8 @@ function CheckInForm({
   const isReturnedMode = mode === "returned";
   const normalizedPlate = plate.trim().toUpperCase();
   const showReturnVisitFields = isReturnedMode && previousJobs.length > 0;
+  const selectedPreviousJob = previousJobs.find((row) => row.id === selectedPreviousJobId) ?? previousJobs[0] ?? null;
+  const needsFreshComplaint = showReturnVisitFields && returnVisitType !== "same_problem";
 
   useEffect(() => {
     (async () => {
@@ -682,10 +696,51 @@ function CheckInForm({
       return;
     }
 
+    if (isReturnedMode && !selectedPreviousJob) {
+      toast.error("Enter a plate with an existing job card first");
+      return;
+    }
+
+    const previousJob = selectedPreviousJob;
+    const previousVehicleTokens = (previousJob?.vehicle_label ?? "").trim().split(/\s+/).filter(Boolean);
+    const fallbackMake = previousVehicleTokens[0] ?? "";
+    const fallbackModel = previousVehicleTokens.slice(1).join(" ");
+    const customerName = (customer.trim() || (isReturnedMode ? (previousJob?.customer_name ?? "") : "")).trim();
+    const customerPhone = (phone.trim() || (isReturnedMode ? (previousJob?.customer_phone ?? "") : "")).trim();
+    const resolvedMake = (make.trim() || (isReturnedMode ? fallbackMake : "")).trim();
+    const resolvedModel = (model.trim() || (isReturnedMode ? fallbackModel : "")).trim();
+    const complaintText = complaint.trim();
+    const resolvedComplaint = showReturnVisitFields && returnVisitType === "same_problem"
+      ? (complaintText || previousJob?.reported_problem || previousJob?.complaint || "")
+      : complaintText;
+    if (needsFreshComplaint && !complaintText) {
+      toast.error("Enter the new reported problem");
+      return;
+    }
+    if (!resolvedComplaint) {
+      toast.error("Reported problem is required");
+      return;
+    }
+
     const selectedMechanic = mechRoster.find((mechanic) => mechanic.id === assignedMechId) ?? null;
-    const customerName = customer.trim();
-    const customerPhone = phone.trim();
-    const vehicleLabel = [make.trim(), model.trim()].filter(Boolean).join(" ") || null;
+    const vehicleLabel = [resolvedMake, resolvedModel].filter(Boolean).join(" ") || null;
+    const resolvedServiceType = isReturnedMode && serviceType === "mechanical" && previousJob?.service_type
+      ? previousJob.service_type
+      : serviceType;
+    const resolvedPaintCode = resolvedServiceType === "body"
+      ? (paintCode || previousJob?.paint_color_code || null)
+      : null;
+    const resolvedHasInsurance = hasInsurance || Boolean(previousJob?.has_insurance);
+    const resolvedInsuranceCompany = resolvedHasInsurance
+      ? (insuranceCompany || previousJob?.insurance_company || null)
+      : null;
+    const resolvedInsurancePolicy = resolvedHasInsurance
+      ? (insurancePolicy || previousJob?.insurance_policy_no || null)
+      : null;
+    const resolvedClientSource = clientSource === "walk_in" && previousJob?.lead_source
+      ? previousJob.lead_source
+      : clientSource;
+    const resolvedClientSourceDetail = clientSourceDetail.trim() || previousJob?.lead_source_detail || "";
 
     setBusy(true);
     try {
@@ -714,9 +769,9 @@ function CheckInForm({
         const clientPayload = {
           name: customerName || normalizedPlate,
           phone_primary: customerPhone || null,
-          source: clientSource || null,
-          source_detail: clientSourceDetail || null,
-          referred_by: clientSource === "referral" ? (clientSourceDetail || null) : null,
+          source: resolvedClientSource || null,
+          source_detail: resolvedClientSourceDetail || null,
+          referred_by: resolvedClientSource === "referral" ? (resolvedClientSourceDetail || null) : null,
         };
 
         if (existingClient?.id) {
@@ -740,8 +795,8 @@ function CheckInForm({
       const vehiclePayload = {
         client_id: clientId,
         plate: normalizedPlate,
-        make: make.trim() || null,
-        model: model.trim() || null,
+        make: resolvedMake || null,
+        model: resolvedModel || null,
         color: aiResult?.color ?? null,
         detected_by_ai: Boolean(aiResult),
       };
@@ -765,17 +820,17 @@ function CheckInForm({
         vehicle_label: vehicleLabel,
         mechanic: selectedMechanic?.name ?? null,
         assigned_mechanic_id: assignedMechId || null,
-        complaint: complaint || null,
-        reported_problem: complaint || null,
-        service_type: serviceType,
-        paint_color_code: serviceType === "body" ? (paintCode || null) : null,
+        complaint: resolvedComplaint || null,
+        reported_problem: resolvedComplaint || null,
+        service_type: resolvedServiceType,
+        paint_color_code: resolvedPaintCode,
         estimate: 0,
-        has_insurance: hasInsurance,
-        insurance_company: hasInsurance ? (insuranceCompany || null) : null,
-        insurance_policy_no: hasInsurance ? (insurancePolicy || null) : null,
-        lead_source: clientSource || null,
-        lead_source_detail: clientSourceDetail || null,
-        previous_job_id: showReturnVisitFields ? (selectedPreviousJobId || null) : null,
+        has_insurance: resolvedHasInsurance,
+        insurance_company: resolvedInsuranceCompany,
+        insurance_policy_no: resolvedInsurancePolicy,
+        lead_source: resolvedClientSource || null,
+        lead_source_detail: resolvedClientSourceDetail || null,
+        previous_job_id: showReturnVisitFields ? (previousJob?.id ?? null) : null,
         return_visit_type: showReturnVisitFields ? returnVisitType : null,
         return_visit_notes: showReturnVisitFields ? (returnVisitNotes.trim() || null) : null,
         status: "diagnosis",
@@ -881,57 +936,85 @@ function CheckInForm({
           </div>
           {photos.plate && <img src={photos.plate.preview} alt="plate" className="mt-1 h-12 rounded" />}
         </div>
-        <div className="space-y-2">
-          <Label>Customer name</Label>
-          <Input placeholder="Customer name" value={customer} onChange={(e) => setCustomer(e.target.value)} />
-        </div>
-        <div className="space-y-2">
-          <Label>Phone</Label>
-          <Input placeholder="+254 7XX XXX XXX" value={phone} onChange={(e) => setPhone(e.target.value)} />
-        </div>
-        <div className="space-y-2">
-          <Label>Make</Label>
-          <Input list="vehicle-makes" placeholder="Mazda" value={make} onChange={(e) => setMake(e.target.value)} />
-          <datalist id="vehicle-makes">
-            <option value="Mazda" /><option value="Toyota" /><option value="Nissan" /><option value="Honda" />
-            <option value="Mitsubishi" /><option value="Subaru" /><option value="Suzuki" /><option value="Isuzu" />
-            <option value="Mercedes-Benz" /><option value="BMW" /><option value="Volkswagen" /><option value="Ford" />
-            <option value="Hyundai" /><option value="Kia" /><option value="Land Rover" />
-          </datalist>
-        </div>
-        <div className="space-y-2">
-          <Label>Model</Label>
-          <Input
-            list={make.toLowerCase() === "mazda" ? "mazda-models" : undefined}
-            placeholder={make.toLowerCase() === "mazda" ? "Demio / Axela / CX-5..." : "Demio, Premio, Note..."}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
-          <datalist id="mazda-models">
-            <option value="Demio" /><option value="Axela" /><option value="Atenza" />
-            <option value="CX-3" /><option value="CX-5" /><option value="CX-7" />
-            <option value="CX-8" /><option value="CX-9" /><option value="Mazda2" />
-            <option value="Mazda3" /><option value="Mazda6" /><option value="Premacy" />
-            <option value="BT-50" /><option value="Bongo" /><option value="Verisa" />
-            <option value="Familia" /><option value="RX-8" /><option value="MX-5" />
-            <option value="Tribute" /><option value="Roadster" />
-          </datalist>
-          {make.toLowerCase() === "mazda" && <p className="text-[11px] text-muted-foreground">Mazda-friendly: pick a Mazda model from the dropdown.</p>}
-        </div>
-        <div className="space-y-2">
-          <Label>Service type</Label>
-          <Select value={serviceType} onValueChange={setServiceType}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="mechanical">Mechanical</SelectItem>
-              <SelectItem value="service">Service</SelectItem>
-              <SelectItem value="electrical">Electrical</SelectItem>
-              <SelectItem value="general_checkup">General Check-up</SelectItem>
-              <SelectItem value="body">Body / Paint</SelectItem>
-              <SelectItem value="diagnosis">Diagnosis only</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+        {isReturnedMode && selectedPreviousJob && (
+          <div className="md:col-span-2 rounded-md border bg-muted/30 p-4 text-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-1">
+                <p className="font-semibold">Matched previous vehicle</p>
+                <p>{selectedPreviousJob.vehicle_label || "Vehicle details on file"} - {selectedPreviousJob.customer_name || "Customer on file"}</p>
+                <p className="text-xs text-muted-foreground">
+                  {selectedPreviousJob.customer_phone || "No phone on file"} - last job {selectedPreviousJob.job_no}
+                </p>
+              </div>
+              <Badge variant="secondary">{STATUS_LABEL[selectedPreviousJob.status]}</Badge>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div>
+                <p className="text-xs uppercase text-muted-foreground">Last reported problem</p>
+                <p>{selectedPreviousJob.reported_problem ?? selectedPreviousJob.complaint ?? "No problem recorded"}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase text-muted-foreground">Service type on file</p>
+                <p>{selectedPreviousJob.service_type ?? "Not set"}</p>
+              </div>
+            </div>
+          </div>
+        )}
+        {!isReturnedMode && (
+          <>
+            <div className="space-y-2">
+              <Label>Customer name</Label>
+              <Input placeholder="Customer name" value={customer} onChange={(e) => setCustomer(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Phone</Label>
+              <Input placeholder="+254 7XX XXX XXX" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Make</Label>
+              <Input list="vehicle-makes" placeholder="Mazda" value={make} onChange={(e) => setMake(e.target.value)} />
+              <datalist id="vehicle-makes">
+                <option value="Mazda" /><option value="Toyota" /><option value="Nissan" /><option value="Honda" />
+                <option value="Mitsubishi" /><option value="Subaru" /><option value="Suzuki" /><option value="Isuzu" />
+                <option value="Mercedes-Benz" /><option value="BMW" /><option value="Volkswagen" /><option value="Ford" />
+                <option value="Hyundai" /><option value="Kia" /><option value="Land Rover" />
+              </datalist>
+            </div>
+            <div className="space-y-2">
+              <Label>Model</Label>
+              <Input
+                list={make.toLowerCase() === "mazda" ? "mazda-models" : undefined}
+                placeholder={make.toLowerCase() === "mazda" ? "Demio / Axela / CX-5..." : "Demio, Premio, Note..."}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+              <datalist id="mazda-models">
+                <option value="Demio" /><option value="Axela" /><option value="Atenza" />
+                <option value="CX-3" /><option value="CX-5" /><option value="CX-7" />
+                <option value="CX-8" /><option value="CX-9" /><option value="Mazda2" />
+                <option value="Mazda3" /><option value="Mazda6" /><option value="Premacy" />
+                <option value="BT-50" /><option value="Bongo" /><option value="Verisa" />
+                <option value="Familia" /><option value="RX-8" /><option value="MX-5" />
+                <option value="Tribute" /><option value="Roadster" />
+              </datalist>
+              {make.toLowerCase() === "mazda" && <p className="text-[11px] text-muted-foreground">Mazda-friendly: pick a Mazda model from the dropdown.</p>}
+            </div>
+            <div className="space-y-2">
+              <Label>Service type</Label>
+              <Select value={serviceType} onValueChange={setServiceType}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mechanical">Mechanical</SelectItem>
+                  <SelectItem value="service">Service</SelectItem>
+                  <SelectItem value="electrical">Electrical</SelectItem>
+                  <SelectItem value="general_checkup">General Check-up</SelectItem>
+                  <SelectItem value="body">Body / Paint</SelectItem>
+                  <SelectItem value="diagnosis">Diagnosis only</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        )}
         <div className="space-y-2">
           <Label>Assigned mechanic</Label>
           <Select value={assignedMechId || "unassigned"} onValueChange={(value) => setAssignedMechId(value === "unassigned" ? "" : value)}>
@@ -946,35 +1029,39 @@ function CheckInForm({
             </SelectContent>
           </Select>
         </div>
-        {serviceType === "body" ? (
+        {!isReturnedMode && serviceType === "body" ? (
           <div className="space-y-2">
             <Label className="flex items-center gap-1"><Palette className="h-3 w-3" />Paint colour code</Label>
             <Input placeholder="e.g. 1G3 (Toyota Magnetic Gray)" value={paintCode} onChange={(e) => setPaintCode(e.target.value)} />
           </div>
         ) : <div />}
-        <div className="space-y-2">
-          <Label>How did the client come to us?</Label>
-          <Select value={clientSource} onValueChange={setClientSource}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {CLIENT_SOURCE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-2">
-          <Label>{clientSource === "referral" ? "Referral details" : "Source details"}</Label>
-          <Input
-            placeholder={clientSource === "referral" ? "Friend's name or who referred them" : "Campaign, platform, or useful note"}
-            value={clientSourceDetail}
-            onChange={(e) => setClientSourceDetail(e.target.value)}
-          />
-        </div>
-        <div className="md:col-span-2 space-y-2">
-          <Label>Reported problem</Label>
-          <Textarea placeholder="What the customer reported when bringing in the car..." value={complaint} onChange={(e) => setComplaint(e.target.value)} />
-        </div>
+        {!isReturnedMode && (
+          <>
+            <div className="space-y-2">
+              <Label>How did the client come to us?</Label>
+              <Select value={clientSource} onValueChange={setClientSource}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CLIENT_SOURCE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>{clientSource === "referral" ? "Referral details" : "Source details"}</Label>
+              <Input
+                placeholder={clientSource === "referral" ? "Friend's name or who referred them" : "Campaign, platform, or useful note"}
+                value={clientSourceDetail}
+                onChange={(e) => setClientSourceDetail(e.target.value)}
+              />
+            </div>
+            <div className="md:col-span-2 space-y-2">
+              <Label>Reported problem</Label>
+              <Textarea placeholder="What the customer reported when bringing in the car..." value={complaint} onChange={(e) => setComplaint(e.target.value)} />
+            </div>
+          </>
+        )}
 
         {showReturnVisitFields && (
           <div className="md:col-span-2 space-y-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
@@ -1026,6 +1113,27 @@ function CheckInForm({
           </div>
         )}
 
+        {showReturnVisitFields && !needsFreshComplaint && (
+          <div className="md:col-span-2 rounded-md border bg-muted/30 p-3 text-sm">
+            <p className="font-medium">Same-problem return</p>
+            <p className="text-xs text-muted-foreground">
+              This new job card will reuse the previous reported problem unless you add a return note.
+            </p>
+          </div>
+        )}
+        {isReturnedMode && needsFreshComplaint && (
+          <div className="md:col-span-2 space-y-2">
+            <Label>New reported problem</Label>
+            <Textarea
+              placeholder="Describe the new or related problem..."
+              value={complaint}
+              onChange={(e) => setComplaint(e.target.value)}
+            />
+          </div>
+        )}
+
+        {!isReturnedMode && (
+        <>
         <div className="md:col-span-2 space-y-2 rounded-md border bg-muted/30 p-3">
           <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
             <input type="checkbox" checked={hasInsurance} onChange={(e) => setHasInsurance(e.target.checked)} className="h-4 w-4 accent-primary" />
@@ -1089,10 +1197,12 @@ function CheckInForm({
             </div>
           )}
         </div>
+        </>
+        )}
         <div className="md:col-span-2 flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={resetForm}>Reset</Button>
-          <Button type="submit" disabled={busy} className="bg-gradient-primary">
-            <Plus className="mr-2 h-4 w-4" />{busy ? "Creating..." : "Create Job Card"}
+          <Button type="submit" disabled={busy || (isReturnedMode && previousJobs.length === 0)} className="bg-gradient-primary">
+            <Plus className="mr-2 h-4 w-4" />{busy ? "Creating..." : isReturnedMode ? "Create Return Job Card" : "Create Job Card"}
           </Button>
         </div>
       </form>
@@ -2031,15 +2141,52 @@ Golden Automotive Solutions`);
     ? ALL_STATUSES.filter((s) => s !== job.status)
     : allowedNext;
 
-  const changeStatus = async (next: JobStatus) => {
-    setSavingStatus(true);
-    const patch: any = { status: next };
+  const buildStatusPatch = (current: JobStatus, next: JobStatus) => {
+    const patch: Record<string, any> = { status: next };
     if (next === "completed") patch.completed_at = new Date().toISOString();
-    if (next === "closed")    patch.closed_at = new Date().toISOString();
-    const { error } = await supabase.from("jobs").update(patch).eq("id", jobId);
-    setSavingStatus(false);
-    if (error) toast.error(error.message);
-    else { toast.success(`Moved to ${STATUS_LABEL[next]}`); setStatusOverride(false); load(); }
+    else if (STATUS_ORDER[next] < STATUS_ORDER.completed && STATUS_ORDER[current] >= STATUS_ORDER.completed) patch.completed_at = null;
+    if (next === "closed") patch.closed_at = new Date().toISOString();
+    else if (current === "closed") patch.closed_at = null;
+    return patch;
+  };
+
+  const changeStatus = async (next: JobStatus) => {
+    const isOverrideMove = statusOverride && !allowedNext.includes(next);
+    const movingBackward = STATUS_ORDER[next] < STATUS_ORDER[job.status];
+
+    if (isOverrideMove) {
+      let prompt = `Override this job from ${STATUS_LABEL[job.status]} to ${STATUS_LABEL[next]}?`;
+      if (movingBackward && next === "diagnosed") {
+        prompt += "\n\nThis will discard issued parts, clear linked documents, and return the job to a true diagnosed state.";
+      } else if (movingBackward && next === "diagnosis") {
+        prompt += "\n\nThis will discard issued parts, delete diagnosis work, clear linked documents, and reset the job to a fresh awaiting-diagnosis state.";
+      } else {
+        prompt += "\n\nUse this only if you want to bypass the normal workflow for this car.";
+      }
+      if (!window.confirm(prompt)) return;
+    }
+
+    setSavingStatus(true);
+    try {
+      if (isOverrideMove && movingBackward && (next === "diagnosed" || next === "diagnosis")) {
+        const { error } = await (supabase as any).rpc("rollback_job_to_status", {
+          _job_id: jobId,
+          _target_status: next,
+        });
+        if (error) throw error;
+      } else {
+        const patch = buildStatusPatch(job.status, next);
+        const { error } = await supabase.from("jobs").update(patch).eq("id", jobId);
+        if (error) throw error;
+      }
+      toast.success(`Moved to ${STATUS_LABEL[next]}`);
+      setStatusOverride(false);
+      load();
+    } catch (error: any) {
+      toast.error(error.message ?? "Could not change the job status");
+    } finally {
+      setSavingStatus(false);
+    }
   };
 
   return (

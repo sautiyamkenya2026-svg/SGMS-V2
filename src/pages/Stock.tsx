@@ -314,6 +314,12 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
   const [aiNotes, setAiNotes] = useState("");
   const [aiSuggestion, setAiSuggestion] = useState<StockAiSuggestion | null>(null);
 
+  const resetAiFields = () => {
+    setAiPreview("");
+    setAiNotes("");
+    setAiSuggestion(null);
+  };
+
   const analyseWithAi = async () => {
     if (!aiPreview && !aiNotes.trim()) {
       toast({ title: "Add a photo or notes first", variant: "destructive" });
@@ -355,6 +361,11 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
       toast({ title: "Name and SKU are required", variant: "destructive" });
       return;
     }
+    const qty = Number(openingQty || 0);
+    if (qty > 0 && !locationId) {
+      toast({ title: "Pick a stock location first", variant: "destructive" });
+      return;
+    }
     setBusy(true);
     const { data: part, error } = await supabase
       .from("parts")
@@ -373,10 +384,9 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
       toast({ title: "Failed", description: error?.message, variant: "destructive" });
       return;
     }
-    const qty = Number(openingQty || 0);
     if (qty > 0 && locationId) {
       const { data: { user } } = await supabase.auth.getUser();
-      await supabase.from("stock_movements").insert({
+      const { error: movementError } = await supabase.from("stock_movements").insert({
         part_id: part.id,
         location_id: locationId,
         type: "restock",
@@ -387,9 +397,19 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
         reference: "Initial stock",
         created_by: user?.id ?? null,
       });
+      if (movementError) {
+        setBusy(false);
+        toast({
+          title: "Part created but stock was not added",
+          description: movementError.message,
+          variant: "destructive",
+        });
+        return;
+      }
     }
     setBusy(false);
     toast({ title: "Part added", description: `${name} created with ${qty} in stock.` });
+    resetAiFields();
     onDone();
     onClose();
   };
@@ -408,10 +428,15 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
                 <p className="text-sm font-medium">Fill with AI</p>
                 <p className="text-xs text-muted-foreground">Capture a part, label, shelf tag, or receipt and we'll prefill the stock row.</p>
               </div>
-              <Button type="button" size="sm" variant="outline" onClick={analyseWithAi} disabled={aiBusy}>
-                {aiBusy ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-2" />}
-                {aiBusy ? "Scanning..." : "Scan with AI"}
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={resetAiFields} disabled={aiBusy}>
+                  <RefreshCw className="h-3.5 w-3.5 mr-2" /> Refresh
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={analyseWithAi} disabled={aiBusy}>
+                  {aiBusy ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-2" />}
+                  {aiBusy ? "Scanning..." : "Scan with AI"}
+                </Button>
+              </div>
             </div>
             <div className="grid gap-3 md:grid-cols-[120px,1fr]">
               <div className="space-y-2">

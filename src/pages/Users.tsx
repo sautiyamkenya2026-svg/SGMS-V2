@@ -703,7 +703,8 @@ export default function Users() {
           {aiKeys.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">No rotation keys yet. Without a pool, the AI layer falls back to the single provider keys above or to Supabase secrets.</p>
           ) : (
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
               <thead><tr className="border-b text-left text-xs uppercase text-muted-foreground">
                 <th className="p-2">Provider</th><th className="p-2">Label</th><th className="p-2">Last used</th><th className="p-2">Failures</th><th className="p-2 text-right">Actions</th>
               </tr></thead>
@@ -725,12 +726,14 @@ export default function Users() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </Card>
       )}
 
       <Card>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[920px] text-sm">
           <thead><tr className="border-b text-left text-xs uppercase text-muted-foreground">
             <th className="p-3">Staff</th><th className="p-3">Contact</th><th className="p-3">Roles</th><th className="p-3">Fingerprint</th><th className="p-3 text-right">Actions</th>
           </tr></thead>
@@ -790,6 +793,7 @@ export default function Users() {
               })}
           </tbody>
         </table>
+        </div>
       </Card>
 
       <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null); }}>

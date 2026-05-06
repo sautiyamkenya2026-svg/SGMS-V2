@@ -10,7 +10,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Wallet, TrendingDown, ArrowUpCircle, Search, Download, Sparkles, Loader2 } from "lucide-react";
+import { Plus, Wallet, TrendingDown, ArrowUpCircle, Search, Download, Sparkles, Loader2, RefreshCw } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { generatePettyCashReportPDF } from "@/lib/pdf-templates";
@@ -85,6 +85,12 @@ export default function PettyCash() {
   const [aiSourceText, setAiSourceText] = useState("");
   const [aiSummary, setAiSummary] = useState("");
 
+  const resetAiAssistant = () => {
+    setAiPreview("");
+    setAiSourceText("");
+    setAiSummary("");
+  };
+
   const load = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -135,7 +141,7 @@ export default function PettyCash() {
 
   const submit = async () => {
     if (!form.amount) { toast({ title: "Amount required", variant: "destructive" }); return; }
-    const { error } = await supabase.from("petty_cash_entries").insert({
+    const payload = {
       date: form.date,
       type: form.type,
       payee: form.payee || null,
@@ -146,8 +152,16 @@ export default function PettyCash() {
       transaction_time: form.transaction_time || null,
       payment_mode: form.type === "opening_balance" ? "cash" : (form.payment_mode || "cash"),
       payment_reference: form.payment_reference || null,
-    });
+    };
+    const { data: inserted, error } = await supabase
+      .from("petty_cash_entries")
+      .insert(payload)
+      .select("*")
+      .single();
     if (error) { toast({ title: "Save failed", description: error.message, variant: "destructive" }); return; }
+    if (inserted) {
+      setEntries((current) => [inserted as Entry, ...current]);
+    }
     toast({ title: "Entry saved" });
     setOpen(false);
     setForm({
@@ -160,10 +174,8 @@ export default function PettyCash() {
       transaction_time: "",
       payment_reference: "",
     });
-    setAiPreview("");
-    setAiSourceText("");
-    setAiSummary("");
-    load();
+    resetAiAssistant();
+    await load();
   };
 
   const scanWithAi = async () => {
@@ -264,10 +276,15 @@ export default function PettyCash() {
                     <p className="text-sm font-medium">Fill with AI</p>
                     <p className="text-xs text-muted-foreground">Upload an M-PESA screenshot, payment photo, or paste the message text and we’ll fill the details.</p>
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={scanWithAi} disabled={aiBusy}>
-                    {aiBusy ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-2" />}
-                    {aiBusy ? "Scanning..." : "Scan with AI"}
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={resetAiAssistant} disabled={aiBusy}>
+                      <RefreshCw className="h-3.5 w-3.5 mr-2" /> Refresh
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={scanWithAi} disabled={aiBusy}>
+                      {aiBusy ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-2" />}
+                      {aiBusy ? "Scanning..." : "Scan with AI"}
+                    </Button>
+                  </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-[120px,1fr]">
                   <div className="space-y-2">
