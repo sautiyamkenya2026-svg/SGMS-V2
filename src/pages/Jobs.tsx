@@ -21,14 +21,18 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
 import { friendlyErrorMessage } from "@/lib/app-error";
+import {
+  closeReservedDocumentWindow,
+  openStoredDocumentUrl,
+  reserveDocumentWindow,
+  storeGatePassPdf,
+  storeInvoiceDocumentPdf,
+  storeJobCardPdf,
+} from "@/lib/document-storage";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
-import {
-  generateInvoicePDF, generateQuotationPDF, generateReceiptPDF,
-  generateDepositInvoicePDF, generateJobCardPDF, generateGatePassPDF,
-} from "@/lib/pdf-templates";
 
 type JobStatus = "diagnosis" | "diagnosed" | "diagnosis_approval" | "parts" | "parts_approval" | "repair" | "awaiting_approval" | "completed" | "closed";
 
@@ -271,9 +275,16 @@ async function ensureGatePass(jobId: string) {
   return data as GatePassRow;
 }
 
-async function downloadGatePass(job: Job, passNo: string, amountPaid: number) {
-  await generateGatePassPDF({
-    pass_no: passNo,
+async function openGatePassPdf(
+  job: Job,
+  gatePass: GatePassRow,
+  amountPaid: number,
+  target?: Window | null,
+) {
+  const stored = await storeGatePassPdf({
+    gatePassId: gatePass.id,
+    data: {
+      pass_no: gatePass.pass_no,
     job_no: job.job_no,
     plate: job.plate,
     vehicle: job.vehicle_label ?? "",
@@ -284,7 +295,9 @@ async function downloadGatePass(job: Job, passNo: string, amountPaid: number) {
     technicians: job.mechanic ?? "",
     issued_by: "Reception",
     date: new Date().toLocaleString(),
+    },
   });
+  openStoredDocumentUrl(stored.url, target);
 }
 
 export default function Jobs() {
@@ -483,6 +496,7 @@ function BillingRow({ job, onOpen, onChange }: { job: Job; onOpen: () => void; o
       toast.error("Record full payment before issuing the gate pass");
       return;
     }
+    const gatePassWindow = reserveDocumentWindow();
     try {
       const gatePass = await ensureGatePass(job.id);
       await supabase.from("jobs").update({
@@ -490,12 +504,13 @@ function BillingRow({ job, onOpen, onChange }: { job: Job; onOpen: () => void; o
         status: "closed",
         closed_at: new Date().toISOString(),
       }).eq("id", job.id);
-      await downloadGatePass(job, gatePass.pass_no, amountPaid || totalDue);
+      await openGatePassPdf(job, gatePass, amountPaid || totalDue, gatePassWindow);
     } catch (e: any) {
+      closeReservedDocumentWindow(gatePassWindow);
       toast.error(e?.message ?? "Could not issue gate pass");
       return;
     }
-    toast.success("Gate pass issued — drive safely!");
+    toast.success("Gate pass ready — opening secure link");
     onChange();
   };
 
@@ -1464,6 +1479,78 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     vat: false,
   });
 
+  const findInvoiceDocument = (kind: DocumentKind) =>
+    invoicesForJob.find((row: any) => row.doc_type === kind);
+
+  const ensureInvoiceDocumentId = async (kind: DocumentKind) => {
+    const existing = findInvoiceDocument(kind);
+    if (existing?.id) return String(existing.id);
+
+    const snapshot = await persistFinancialSnapshot({ silent: true });
+    if (!snapshot) throw new Error(`Could not prepare the ${DOCUMENT_LABELS[kind].toLowerCase()}`);
+
+    const { data, error } = await supabase
+      .from("invoices")
+      .select("id, doc_type")
+      .eq("job_id", jobId)
+      .eq("doc_type", kind)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data?.id) throw new Error(`${DOCUMENT_LABELS[kind]} is not ready yet`);
+
+    setInvoicesForJob((current) => canonicalizeDocuments([
+      ...(current.filter((row: any) => row.doc_type !== kind)),
+      data as any,
+    ]));
+
+    return String(data.id);
+  };
+
+  const openInvoiceDocumentForJob = async (kind: DocumentKind, target?: Window | null) => {
+    const invoiceId = await ensureInvoiceDocumentId(kind);
+    const stored = await storeInvoiceDocumentPdf({
+      invoiceId,
+      kind,
+      data: buildDocData(kind),
+      paymentMode: kind === "receipt" ? paymentMode : undefined,
+      receivedFrom: kind === "receipt" ? payerLabel : undefined,
+    });
+    openStoredDocumentUrl(stored.url, target);
+    return stored;
+  };
+
+  const openJobCardDocument = async (target?: Window | null) => {
+    const stored = await storeJobCardPdf({
+      jobId,
+      data: {
+        job_no: job.job_no,
+        plate: job.plate,
+        vehicle: job.vehicle_label ?? "",
+        customer_name: job.customer_name ?? "",
+        customer_phone: job.customer_phone ?? "",
+        customer_complaint: reportedProblem || (job.complaint ?? ""),
+        technician_diagnosis: [
+          job.ai_diagnostic_summary?.trim(),
+          workPerformed.trim() ? `Work performed: ${workPerformed.trim()}` : "",
+        ].filter(Boolean).join("\n\n"),
+        technicians: job.mechanic ?? "",
+        paint_color_code: job.paint_color_code ?? undefined,
+      },
+    });
+    openStoredDocumentUrl(stored.url, target);
+    return stored;
+  };
+
+  const openStoredDocumentCard = async (action: (target: Window | null) => Promise<unknown>) => {
+    const target = reserveDocumentWindow();
+    try {
+      await action(target);
+    } catch (e: any) {
+      closeReservedDocumentWindow(target);
+      toast.error(e?.message ?? "Could not open that PDF");
+    }
+  };
+
   // ------- AI: regenerate diagnostic summary + recommended parts ---------
   const runAiSummary = async () => {
     setAiBusy(true);
@@ -2011,6 +2098,8 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       toast.error("Total paid so far is less than the job total");
       return;
     }
+    const receiptWindow = paymentBypass ? null : reserveDocumentWindow();
+    const gatePassWindow = reserveDocumentWindow();
     const snapshot = await persistFinancialSnapshot({
       amountPaidValue: totalPaidValue,
       extraJobPatch: {
@@ -2021,27 +2110,30 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       },
       silent: true,
     });
-    if (!snapshot) return;
+    if (!snapshot) {
+      closeReservedDocumentWindow(receiptWindow);
+      closeReservedDocumentWindow(gatePassWindow);
+      return;
+    }
     try {
       const gatePass = await ensureGatePass(jobId);
       // Trigger PDFs in parallel — receipt and gate pass
       if (paymentBypass) {
-        await downloadGatePass(snapshot, gatePass.pass_no, totalPaidValue);
-        toast.success("Payment bypass saved and gate pass downloaded");
-        return;
+        await openGatePassPdf(snapshot, gatePass, totalPaidValue, gatePassWindow);
+        toast.success("Payment bypass saved and gate pass link opened");
       } else {
         await Promise.all([
-          generateReceiptPDF({ ...buildDocData("receipt"), payment_mode: paymentMode.toUpperCase() }),
-          downloadGatePass(snapshot, gatePass.pass_no, totalPaidValue),
+          openInvoiceDocumentForJob("receipt", receiptWindow),
+          openGatePassPdf(snapshot, gatePass, totalPaidValue, gatePassWindow),
         ]);
-        toast.success("Paid and receipt/gate pass downloaded");
-        return;
+        toast.success("Paid and receipt/gate pass links opened");
       }
-      toast.success("Paid — receipt & gate pass downloaded");
+      load();
     } catch (e: any) {
-      toast.error(e?.message ?? "Payment was saved, but PDF download failed");
+      closeReservedDocumentWindow(receiptWindow);
+      closeReservedDocumentWindow(gatePassWindow);
+      toast.error(e?.message ?? "Payment was saved, but document links could not be opened");
     }
-    load();
   };
 
   // ===== Approval flow: send the client a feedback link =====
@@ -2959,7 +3051,7 @@ Golden Automotive Solutions`);
                 enabled={canQuotation}
                 lockedReason="Available after diagnosis is logged."
                 active={currentStage === "quotation"}
-                onDownload={() => generateQuotationPDF(buildDocData("quotation"))}
+                onDownload={() => openStoredDocumentCard((target) => openInvoiceDocumentForJob("quotation", target))}
               />
               <DocCard
                 title="Deposit invoice"
@@ -2967,7 +3059,7 @@ Golden Automotive Solutions`);
                 enabled={canDepositInvoice}
                 lockedReason="Set a deposit amount to unlock this document."
                 active={currentStage === "deposit_invoice"}
-                onDownload={() => generateDepositInvoicePDF(buildDocData("deposit_invoice"))}
+                onDownload={() => openStoredDocumentCard((target) => openInvoiceDocumentForJob("deposit_invoice", target))}
               />
               <DocCard
                 title="Invoice"
@@ -2975,7 +3067,7 @@ Golden Automotive Solutions`);
                 enabled={canInvoice}
                 lockedReason="Unlocks when the job is marked complete (after customer approval)."
                 active={currentStage === "invoice"}
-                onDownload={() => generateInvoicePDF(buildDocData("invoice"))}
+                onDownload={() => openStoredDocumentCard((target) => openInvoiceDocumentForJob("invoice", target))}
               />
               <DocCard
                 title="Receipt"
@@ -2983,21 +3075,14 @@ Golden Automotive Solutions`);
                 enabled={canReceipt}
                 lockedReason="Unlocks once the customer has paid in full."
                 active={currentStage === "receipt"}
-                onDownload={() => generateReceiptPDF({ ...buildDocData("receipt"), payment_mode: paymentMode.toUpperCase() })}
+                onDownload={() => openStoredDocumentCard((target) => openInvoiceDocumentForJob("receipt", target))}
               />
               <DocCard
                 title="Job card"
                 icon={<ClipboardList className="h-4 w-4" />}
                 enabled={true}
                 active={false}
-                onDownload={() => generateJobCardPDF({
-                  job_no: job.job_no, plate: job.plate, vehicle: job.vehicle_label ?? "",
-                  customer_name: job.customer_name ?? "", customer_phone: job.customer_phone ?? "",
-                  customer_complaint: reportedProblem || (job.complaint ?? ""),
-                  technician_diagnosis: [job.ai_diagnostic_summary?.trim(), workPerformed.trim() ? `Work performed: ${workPerformed.trim()}` : ""].filter(Boolean).join("\n\n"),
-                  technicians: job.mechanic ?? "",
-                  paint_color_code: job.paint_color_code ?? undefined,
-                })}
+                onDownload={() => openStoredDocumentCard((target) => openJobCardDocument(target))}
               />
             </div>
             <p className="text-xs text-muted-foreground mt-4">
@@ -3290,7 +3375,7 @@ function DocCard({
       </div>
       {!enabled && lockedReason && <p className="text-[11px] text-muted-foreground mb-2">{lockedReason}</p>}
       <Button size="sm" variant={active ? "default" : "outline"} className={`w-full ${active ? "bg-gradient-primary" : ""}`} disabled={!enabled} onClick={onDownload}>
-        Download PDF
+        Open PDF
       </Button>
     </div>
   );

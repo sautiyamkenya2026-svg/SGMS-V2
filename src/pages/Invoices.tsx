@@ -10,7 +10,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, FileText, DollarSign, Clock, CheckCircle2, Download, Receipt, FileSignature, Wallet } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
-import { generateDepositInvoicePDF, generateInvoicePDF, generateQuotationPDF, generateReceiptPDF } from "@/lib/pdf-templates";
+import {
+  closeReservedDocumentWindow,
+  openStoredDocumentUrl,
+  reserveDocumentWindow,
+  storeInvoiceDocumentPdf,
+} from "@/lib/document-storage";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { canonicalizeDocuments } from "@/lib/generated-records";
 
@@ -114,25 +119,25 @@ function buildPdfData(doc: DocumentRow) {
   };
 }
 
-async function downloadDocument(doc: DocumentRow) {
-  const pdfData = buildPdfData(doc);
-  if (doc.doc_type === "quotation") {
-    await generateQuotationPDF(pdfData);
-    return;
-  }
-  if (doc.doc_type === "deposit_invoice") {
-    await generateDepositInvoicePDF(pdfData);
-    return;
-  }
-  if (doc.doc_type === "receipt") {
-    await generateReceiptPDF({
-      ...pdfData,
-      received_from: doc.payer_name ?? undefined,
-      payment_mode: (doc.payment_mode ?? "cash").toUpperCase(),
+async function openDocument(doc: DocumentRow) {
+  const target = reserveDocumentWindow();
+  try {
+    const stored = await storeInvoiceDocumentPdf({
+      invoiceId: doc.id,
+      kind: doc.doc_type,
+      data: buildPdfData(doc),
+      paymentMode: doc.payment_mode,
+      receivedFrom: doc.payer_name,
     });
-    return;
+    openStoredDocumentUrl(stored.url, target);
+  } catch (error: any) {
+    closeReservedDocumentWindow(target);
+    toast({
+      title: "Could not open PDF",
+      description: error?.message ?? "The document link could not be prepared.",
+      variant: "destructive",
+    });
   }
-  await generateInvoicePDF(pdfData);
 }
 
 export default function Invoices() {
@@ -365,8 +370,8 @@ export default function Invoices() {
                     </div>
                   </div>
                 </button>
-                <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => downloadDocument(doc)}>
-                  <Download className="mr-1 h-3.5 w-3.5" />PDF
+                <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => openDocument(doc)}>
+                  <Download className="mr-1 h-3.5 w-3.5" />Open PDF
                 </Button>
               </div>
             ))}
@@ -384,7 +389,7 @@ export default function Invoices() {
                   <th className="p-3 text-right">Amount</th>
                   <th className="p-3 text-right">Paid</th>
                   <th className="p-3">Status</th>
-                  <th className="p-3 text-right">Download</th>
+                  <th className="p-3 text-right">Open</th>
                 </tr>
               </thead>
               <tbody>
@@ -410,8 +415,8 @@ export default function Invoices() {
                     <td className="p-3 text-right">{fmt(doc.amount_paid)}</td>
                     <td className="p-3">{statusBadge(doc.status)}</td>
                     <td className="p-3 text-right">
-                      <Button size="sm" variant="outline" onClick={() => downloadDocument(doc)}>
-                        <Download className="mr-1 h-3.5 w-3.5" />PDF
+                      <Button size="sm" variant="outline" onClick={() => openDocument(doc)}>
+                        <Download className="mr-1 h-3.5 w-3.5" />Open PDF
                       </Button>
                     </td>
                   </tr>

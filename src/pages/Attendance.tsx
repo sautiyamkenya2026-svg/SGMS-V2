@@ -26,6 +26,12 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { friendlyErrorMessage } from "@/lib/app-error";
 import { useAuth } from "@/lib/auth";
+import {
+  closeReservedDocumentWindow,
+  openStoredDocumentUrl,
+  reserveDocumentWindow,
+  storeGeneratedTextFile,
+} from "@/lib/document-storage";
 import { toast } from "sonner";
 
 type StaffRoleRow = {
@@ -221,7 +227,7 @@ export default function Attendance() {
     setQ("");
   };
 
-  const exportAttendance = () => {
+  const exportAttendance = async () => {
     if (filteredEntries.length === 0) {
       toast.error("No attendance rows match the current filters.");
       return;
@@ -245,15 +251,21 @@ export default function Attendance() {
       }),
     ];
 
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `attendance-${dayFilter || monthFilter || toLocalDateValue()}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const fileName = `attendance-${dayFilter || monthFilter || toLocalDateValue()}.csv`;
+    const target = reserveDocumentWindow();
+    try {
+      const stored = await storeGeneratedTextFile({
+        path: `reports/attendance/${fileName}`,
+        fileName,
+        contents: lines.join("\n"),
+        contentType: "text/csv;charset=utf-8;",
+      });
+      openStoredDocumentUrl(stored.url, target);
+      toast.success("Attendance export ready");
+    } catch (error: any) {
+      closeReservedDocumentWindow(target);
+      toast.error(friendlyErrorMessage(error, "Could not prepare that attendance export."));
+    }
   };
 
   if (!allowed) {

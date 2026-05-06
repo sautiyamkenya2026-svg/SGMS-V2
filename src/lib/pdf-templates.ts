@@ -4,6 +4,17 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import logoUrl from "@/assets/golden-logo.png";
 
+export type PdfOutputMode = "download" | "blob";
+
+export interface PdfBuildOptions {
+  mode?: PdfOutputMode;
+}
+
+export interface GeneratedPdfFile {
+  blob: Blob;
+  fileName: string;
+}
+
 const BROWN: [number, number, number] = [135, 75, 25];
 const GOLD: [number, number, number] = [212, 160, 23];
 const DARK: [number, number, number] = [40, 24, 8];
@@ -35,6 +46,12 @@ async function loadLogo(): Promise<string> {
 
 function fmtKsh(n: number) {
   return `KSh ${Number(n || 0).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function finalizePdf(doc: jsPDF, fileName: string, options: PdfBuildOptions = {}): GeneratedPdfFile {
+  const blob = doc.output("blob");
+  if (options.mode !== "blob") doc.save(fileName);
+  return { blob, fileName };
 }
 
 async function drawDocumentWatermark(doc: jsPDF) {
@@ -167,6 +184,7 @@ async function generateInvoiceLikePDF(
   title: string,
   filePrefix: string,
   data: InvoiceData,
+  options: PdfBuildOptions = {},
 ) {
   const doc = await buildBaseDoc();
   const headerY = await drawHeader(doc, title);
@@ -250,20 +268,20 @@ async function generateInvoiceLikePDF(
   }
 
   drawFooter(doc, "ACCOUNTS ARE DUE ON DEMAND  ·  E.&O.E");
-  doc.save(`${filePrefix}-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`);
+  return finalizePdf(doc, `${filePrefix}-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`, options);
 }
 
 // ----- INVOICE -----
-export async function generateInvoicePDF(data: InvoiceData) {
-  await generateInvoiceLikePDF("INVOICE", "Invoice", data);
+export async function generateInvoicePDF(data: InvoiceData, options: PdfBuildOptions = {}) {
+  return generateInvoiceLikePDF("INVOICE", "Invoice", data, options);
 }
 
-export async function generateDepositInvoicePDF(data: InvoiceData) {
-  await generateInvoiceLikePDF("DEPOSIT INVOICE", "Deposit-Invoice", data);
+export async function generateDepositInvoicePDF(data: InvoiceData, options: PdfBuildOptions = {}) {
+  return generateInvoiceLikePDF("DEPOSIT INVOICE", "Deposit-Invoice", data, options);
 }
 
 // ----- QUOTATION -----
-export async function generateQuotationPDF(data: InvoiceData & { valid_until?: string }) {
+export async function generateQuotationPDF(data: InvoiceData & { valid_until?: string }, options: PdfBuildOptions = {}) {
   const doc = await buildBaseDoc();
   const headerY = await drawHeader(doc, "QUOTATION");
   const w = doc.internal.pageSize.getWidth();
@@ -350,11 +368,14 @@ export async function generateQuotationPDF(data: InvoiceData & { valid_until?: s
   ].forEach((line, i) => doc.text(line, 8, ty + 4 + i * 3.2));
 
   drawFooter(doc, "THANK YOU FOR THE OPPORTUNITY TO SERVE YOU!");
-  doc.save(`Quotation-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`);
+  return finalizePdf(doc, `Quotation-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`, options);
 }
 
 // ----- RECEIPT -----
-export async function generateReceiptPDF(data: InvoiceData & { received_from?: string; payment_mode?: string }) {
+export async function generateReceiptPDF(
+  data: InvoiceData & { received_from?: string; payment_mode?: string },
+  options: PdfBuildOptions = {},
+) {
   const doc = await buildBaseDoc();
   const headerY = await drawHeader(doc, "CASH RECEIPT");
   const w = doc.internal.pageSize.getWidth();
@@ -413,7 +434,7 @@ export async function generateReceiptPDF(data: InvoiceData & { received_from?: s
   });
 
   drawFooter(doc, "WITH THANKS  ·  GOODS ONCE SOLD ARE NOT RETURNABLE.");
-  doc.save(`Receipt-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`);
+  return finalizePdf(doc, `Receipt-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`, options);
 }
 
 // ----- JOB CARD -----
@@ -434,7 +455,7 @@ export interface JobCardData {
   paint_color_code?: string;
 }
 
-export async function generateJobCardPDF(data: JobCardData) {
+export async function generateJobCardPDF(data: JobCardData, options: PdfBuildOptions = {}) {
   const doc = await buildBaseDoc();
   const headerY = await drawHeader(doc, "JOB CARD");
   const w = doc.internal.pageSize.getWidth();
@@ -490,7 +511,7 @@ export async function generateJobCardPDF(data: JobCardData) {
   doc.text("Authorised by", w / 2 + 4, y + 3);
 
   drawFooter(doc, "Vehicle accepted in the condition described above. E.&O.E");
-  doc.save(`JobCard-${data.job_no || data.plate || "GAS"}.pdf`);
+  return finalizePdf(doc, `JobCard-${data.job_no || data.plate || "GAS"}.pdf`, options);
 }
 
 // ----- GATE PASS -----
@@ -512,7 +533,7 @@ export interface GatePassData {
 // Bus-ticket sized gate pass: 80mm x 150mm. Minimal info: just the
 // pass number, plate, and "FULLY SETTLED" stamp. The gateman searches
 // the number in the system to verify the vehicle is cleared.
-export async function generateGatePassPDF(data: GatePassData) {
+export async function generateGatePassPDF(data: GatePassData, options: PdfBuildOptions = {}) {
   const doc = new jsPDF({ unit: "mm", format: [80, 150] });
   const w = doc.internal.pageSize.getWidth();
   const h = doc.internal.pageSize.getHeight();
@@ -614,7 +635,7 @@ export async function generateGatePassPDF(data: GatePassData) {
   doc.setFillColor(...BROWN);
   doc.rect(0, h - 4, w, 4, "F");
 
-  doc.save(`GatePass-${data.pass_no}.pdf`);
+  return finalizePdf(doc, `GatePass-${data.pass_no}.pdf`, options);
 }
 
 // ----- PETTY CASH REPORT -----
@@ -637,7 +658,7 @@ export interface PettyCashReportData {
   generated_by?: string;
 }
 
-export async function generatePettyCashReportPDF(data: PettyCashReportData) {
+export async function generatePettyCashReportPDF(data: PettyCashReportData, options: PdfBuildOptions = {}) {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const headerY = await drawHeader(doc, "PETTY CASH REPORT");
   const w = doc.internal.pageSize.getWidth();
@@ -739,5 +760,5 @@ export async function generatePettyCashReportPDF(data: PettyCashReportData) {
     drawFooter(doc, `Petty Cash Report  ·  ${data.from} → ${data.to}  ·  Page ${i} of ${pageCount}`);
   }
 
-  doc.save(`PettyCash-${data.from}_to_${data.to}.pdf`);
+  return finalizePdf(doc, `PettyCash-${data.from}_to_${data.to}.pdf`, options);
 }

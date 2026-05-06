@@ -47,6 +47,13 @@ type PettyCashAISuggestion = {
 };
 
 const fmt = (n: number) => `KSh ${Number(n).toLocaleString()}`;
+const normalizePaymentReference = (value: string | null | undefined) =>
+  String(value ?? "").trim().toUpperCase().replace(/\s+/g, "");
+const normalizeTransactionTime = (value: string | null | undefined) =>
+  String(value ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+const isMpesaMode = (value: string | null | undefined) => String(value ?? "").trim().toLowerCase() === "mpesa";
+const isDuplicateTransactionError = (error: { code?: string | null; message?: string | null } | null | undefined) =>
+  error?.code === "23505" || String(error?.message ?? "").toLowerCase().includes("transaction already exists");
 
 // Contact is appended into details as "Contact: …" — parse it back out for display & PDF.
 function splitContact(details: string | null): { details: string | null; contact: string | null } {
@@ -140,24 +147,61 @@ export default function PettyCash() {
 
   const submit = async () => {
     if (!form.amount) { toast({ title: "Amount required", variant: "destructive" }); return; }
+    const normalizedAmount = Number(form.amount);
+    const normalizedPaymentMode = form.type === "opening_balance" ? "cash" : String(form.payment_mode || "cash").toLowerCase();
+    const normalizedPaymentReference = isMpesaMode(normalizedPaymentMode)
+      ? normalizePaymentReference(form.payment_reference)
+      : String(form.payment_reference ?? "").trim();
+    const normalizedTransactionTime = normalizeTransactionTime(form.transaction_time);
+
+    if (isMpesaMode(normalizedPaymentMode) && normalizedPaymentReference) {
+      let duplicateQuery = supabase
+        .from("petty_cash_entries")
+        .select("id")
+        .eq("payment_mode", "mpesa")
+        .eq("payment_reference", normalizedPaymentReference)
+        .eq("amount", normalizedAmount)
+        .limit(1);
+
+      const { data: existingDuplicate, error: duplicateLookupError } = normalizedTransactionTime
+        ? await duplicateQuery.eq("transaction_time", normalizedTransactionTime).maybeSingle()
+        : await duplicateQuery.is("transaction_time", null).maybeSingle();
+
+      if (duplicateLookupError) {
+        toast({ title: "Could not verify transaction", description: duplicateLookupError.message, variant: "destructive" });
+        return;
+      }
+      if (existingDuplicate?.id) {
+        toast({ title: "Transaction already exists", description: "This M-PESA transaction is already saved.", variant: "destructive" });
+        return;
+      }
+    }
+
     const payload = {
       date: form.date,
       type: form.type,
       payee: form.payee || null,
       contact: form.contact || null,
       details: form.details || null,
-      amount: Number(form.amount),
+      amount: normalizedAmount,
       transaction_cost: Number(form.transaction_cost || 0),
-      transaction_time: form.transaction_time || null,
-      payment_mode: form.type === "opening_balance" ? "cash" : (form.payment_mode || "cash"),
-      payment_reference: form.payment_reference || null,
+      transaction_time: normalizedTransactionTime || null,
+      payment_mode: normalizedPaymentMode,
+      payment_reference: normalizedPaymentReference || null,
     };
     const { data: inserted, error } = await supabase
       .from("petty_cash_entries")
       .insert(payload)
       .select("*")
       .single();
-    if (error) { toast({ title: "Save failed", description: error.message, variant: "destructive" }); return; }
+    if (error) {
+      if (isDuplicateTransactionError(error)) {
+        toast({ title: "Transaction already exists", description: "This M-PESA transaction is already saved.", variant: "destructive" });
+      } else {
+        toast({ title: "Save failed", description: error.message, variant: "destructive" });
+      }
+      return;
+    }
     if (inserted) {
       setEntries((current) => [inserted as Entry, ...current]);
     }
