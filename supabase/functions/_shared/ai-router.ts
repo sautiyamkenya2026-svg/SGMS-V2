@@ -157,12 +157,12 @@ async function loadRuntimeSettings(sb: SupabaseClient): Promise<AIRuntimeSetting
       defaultProvider,
     ),
     analysisProvider: normalizeProvider(
-      readEnvOrSetting("AI_ANALYSIS_PROVIDER", "ai_analysis_provider", settingsMap, "gemini"),
-      "gemini",
+      readEnvOrSetting("AI_ANALYSIS_PROVIDER", "ai_analysis_provider", settingsMap, "groq"),
+      "groq",
     ),
     imageProvider: normalizeProvider(
-      readEnvOrSetting("AI_IMAGE_PROVIDER", "ai_image_provider", settingsMap, "gemini"),
-      "gemini",
+      readEnvOrSetting("AI_IMAGE_PROVIDER", "ai_image_provider", settingsMap, "groq"),
+      "groq",
     ),
     geminiApiVersion: readEnvOrSetting("GEMINI_API_VERSION", "", settingsMap, "v1beta"),
     geminiModel: readEnvOrSetting("GEMINI_MODEL", "", settingsMap, "gemini-2.5-flash").replace(/^models\//, ""),

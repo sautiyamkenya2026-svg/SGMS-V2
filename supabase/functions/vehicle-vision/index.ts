@@ -37,7 +37,7 @@ async function requireUser(req: Request) {
 }
 
 function toImageParts(images: string[]): AIMessagePart[] {
-  return images.slice(0, 4).flatMap((url) => {
+  return images.slice(0, 6).flatMap((url) => {
     if (/^(data:|https?:\/\/)/i.test(url)) {
       return [{ type: "image_url", image_url: { url } }];
     }

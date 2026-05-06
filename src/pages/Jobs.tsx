@@ -24,7 +24,7 @@ import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
 import {
   generateInvoicePDF, generateQuotationPDF, generateReceiptPDF,
-  generateJobCardPDF, generateGatePassPDF,
+  generateDepositInvoicePDF, generateJobCardPDF, generateGatePassPDF,
 } from "@/lib/pdf-templates";
 
 type JobStatus = "diagnosis" | "diagnosed" | "diagnosis_approval" | "parts" | "parts_approval" | "repair" | "awaiting_approval" | "completed" | "closed";
@@ -89,6 +89,8 @@ interface Job {
   quotation_amount: number;
   invoice_amount: number;
   receipt_amount: number;
+  deposit_required: number;
+  deposit_paid: number;
   discount_amount: number;
   discount_reason: string | null;
   assigned_mechanic_id: string | null;
@@ -96,6 +98,13 @@ interface Job {
   client_approved_at: string | null;
   client_rating: number | null;
   feedback_rating: number | null;
+  lead_source: string | null;
+  lead_source_detail: string | null;
+  payer_type: string;
+  payer_name: string | null;
+  payment_bypass: boolean;
+  payment_bypass_reason: string | null;
+  payment_bypass_authorized_by: string | null;
 }
 
 const columns: { key: JobStatus; label: string; color: string }[] = [
@@ -144,6 +153,58 @@ const isJobSettled = (job: Partial<Job>) => {
 };
 
 type GatePassRow = { id: string; pass_no: string; issued_at: string };
+type JobCardPhotoKind = "plate" | "front" | "back" | "left" | "right" | "door_jamb";
+type JobCardPhotoDraft = { file: File; preview: string };
+
+const JOB_CARD_PHOTO_LABELS: Record<JobCardPhotoKind, string> = {
+  plate: "Plate",
+  front: "Front",
+  back: "Back",
+  left: "Left",
+  right: "Right",
+  door_jamb: "Door jamb",
+};
+
+const VEHICLE_AI_PHOTO_KINDS: JobCardPhotoKind[] = ["front", "back", "left", "right"];
+
+const CLIENT_SOURCE_OPTIONS = [
+  { value: "walk_in", label: "Walk-in" },
+  { value: "referral", label: "Referral by friend" },
+  { value: "social_media_ads", label: "Social media ads" },
+  { value: "repeat_customer", label: "Repeat customer" },
+  { value: "insurance", label: "Insurance partner" },
+  { value: "other", label: "Other" },
+] as const;
+
+const SERVICE_KIT_PRESETS = {
+  petrol: ["Engine oil", "Air filter", "Cabin filter", "Oil filter"],
+  diesel: ["Engine oil", "Air filter", "Cabin filter", "Oil filter", "Fuel filter"],
+} as const;
+
+type DocumentKind = "quotation" | "deposit_invoice" | "invoice" | "receipt";
+
+const DOCUMENT_LABELS: Record<DocumentKind, string> = {
+  quotation: "Quotation",
+  deposit_invoice: "Deposit invoice",
+  invoice: "Invoice",
+  receipt: "Receipt",
+};
+
+const LEAD_SOURCE_LABELS: Record<string, string> = {
+  walk_in: "Walk-in",
+  referral: "Referral by friend",
+  social_media_ads: "Social media ads",
+  repeat_customer: "Repeat customer",
+  insurance: "Insurance partner",
+  other: "Other",
+};
+
+const getDocumentNumber = (jobNo: string, kind: DocumentKind) => {
+  if (kind === "quotation") return `Q-${jobNo}`;
+  if (kind === "deposit_invoice") return `DEP-${jobNo}`;
+  if (kind === "receipt") return `RC-${jobNo}`;
+  return `INV-${jobNo}`;
+};
 
 async function ensureGatePass(jobId: string) {
   const { data: existing, error: existingError } = await supabase
@@ -421,21 +482,22 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
   const [phone, setPhone] = useState("");
   const [make, setMake] = useState("");
   const [model, setModel] = useState("");
-  const [assignedMechIds, setAssignedMechIds] = useState<string[]>([]);
+  const [assignedMechId, setAssignedMechId] = useState("");
   const [mechRoster, setMechRoster] = useState<Array<{ id: string; name: string; specialties: string[]; level: string }>>([]);
   const [complaint, setComplaint] = useState("");
   const [serviceType, setServiceType] = useState<string>("mechanical");
   const [paintCode, setPaintCode] = useState("");
-  const [photos, setPhotos] = useState<Record<string, string>>({});
+  const [photos, setPhotos] = useState<Partial<Record<JobCardPhotoKind, JobCardPhotoDraft>>>({});
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiResult, setAiResult] = useState<any>(null);
   const [hasInsurance, setHasInsurance] = useState(false);
   const [insuranceCompany, setInsuranceCompany] = useState("");
   const [insurancePolicy, setInsurancePolicy] = useState("");
+  const [clientSource, setClientSource] = useState<string>("walk_in");
+  const [clientSourceDetail, setClientSourceDetail] = useState("");
   const [history, setHistory] = useState<{ count: number; lastJobNo?: string }>({ count: 0 });
 
-  // Load mechanic roster for the multi-select
   useEffect(() => {
     (async () => {
       const { data } = await supabase
@@ -447,28 +509,35 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
     })();
   }, []);
 
-  // Re-admission detection
   useEffect(() => {
-    const p = plate.trim().toUpperCase();
-    if (p.length < 4) { setHistory({ count: 0 }); return; }
-    const t = setTimeout(async () => {
+    const normalizedPlate = plate.trim().toUpperCase();
+    if (normalizedPlate.length < 4) {
+      setHistory({ count: 0 });
+      return;
+    }
+    const timeoutId = setTimeout(async () => {
       const { data } = await supabase
         .from("jobs")
         .select("job_no")
-        .eq("plate", p)
+        .eq("plate", normalizedPlate)
         .order("created_at", { ascending: false })
         .limit(5);
       setHistory({ count: data?.length ?? 0, lastJobNo: data?.[0]?.job_no });
     }, 400);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timeoutId);
   }, [plate]);
 
   const analysePhotos = async () => {
-    const imgs = ["front", "back", "left", "right"].map(s => photos[s]).filter(Boolean);
-    if (imgs.length === 0) { toast.error("Take at least one vehicle photo first"); return; }
+    const images = VEHICLE_AI_PHOTO_KINDS
+      .map((side) => photos[side]?.preview)
+      .filter((value): value is string => Boolean(value));
+    if (images.length === 0) {
+      toast.error("Take at least one vehicle photo first");
+      return;
+    }
     setAiBusy(true);
     try {
-      const { data, error, response } = await supabase.functions.invoke("vehicle-vision", { body: { images: imgs } });
+      const { data, error, response } = await supabase.functions.invoke("vehicle-vision", { body: { images } });
       if (error || (data as any)?.error) {
         const message = (data as any)?.error
           ?? await readEdgeFunctionErrorMessage(error, response, "AI failed");
@@ -479,8 +548,8 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
       if (data?.make && !make) setMake(data.make);
       if (data?.model && !model) setModel(data.model);
       if (data?.plate && !plate) setPlate(String(data.plate).toUpperCase());
-      if (Array.isArray(data?.visible_problems) && data.visible_problems.length && !complaint) {
-        setComplaint(data.visible_problems.map((p: any) => `• ${p.area}: ${p.problem} (${p.severity})`).join("\n"));
+      if (Array.isArray(data?.visible_problems) && data.visible_problems.length > 0 && !complaint) {
+        setComplaint(data.visible_problems.map((photoIssue: any) => `- ${photoIssue.area}: ${photoIssue.problem} (${photoIssue.severity})`).join("\n"));
       }
       toast.success("Photos analysed — review and edit anything that's wrong");
     } finally {
@@ -488,56 +557,181 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
     }
   };
 
-  const toggleMech = (id: string) =>
-    setAssignedMechIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const resetForm = () => {
+    setPlate("");
+    setCustomer("");
+    setPhone("");
+    setMake("");
+    setModel("");
+    setAssignedMechId("");
+    setComplaint("");
+    setServiceType("mechanical");
+    setPaintCode("");
+    setPhotos({});
+    setAiResult(null);
+    setHasInsurance(false);
+    setInsuranceCompany("");
+    setInsurancePolicy("");
+    setClientSource("walk_in");
+    setClientSourceDetail("");
+  };
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!plate.trim()) { toast.error("Plate is required"); return; }
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const normalizedPlate = plate.trim().toUpperCase();
+    if (!normalizedPlate) {
+      toast.error("Plate is required");
+      return;
+    }
+
+    const selectedMechanic = mechRoster.find((mechanic) => mechanic.id === assignedMechId) ?? null;
+    const customerName = customer.trim();
+    const customerPhone = phone.trim();
     const vehicleLabel = [make.trim(), model.trim()].filter(Boolean).join(" ") || null;
-    const mechNames = mechRoster.filter(m => assignedMechIds.includes(m.id)).map(m => m.name).join(", ") || null;
+
     setBusy(true);
-    const { data: job, error } = await supabase.from("jobs").insert({
-      plate: plate.trim().toUpperCase(),
-      customer_name: customer || null,
-      customer_phone: phone || null,
-      vehicle_label: vehicleLabel,
-      mechanic: mechNames,
-      assigned_mechanic_id: assignedMechIds[0] ?? null,
-      complaint: complaint || null,
-      reported_problem: complaint || null,
-      service_type: serviceType,
-      paint_color_code: serviceType === "body" ? (paintCode || null) : null,
-      estimate: 0,
-      has_insurance: hasInsurance,
-      insurance_company: hasInsurance ? (insuranceCompany || null) : null,
-      insurance_policy_no: hasInsurance ? (insurancePolicy || null) : null,
-      status: "diagnosis",
-      created_by: userId ?? null,
-    }).select("id").single();
-    setBusy(false);
-    if (error) toast.error(error.message);
-    else {
-      // Persist multi-mechanic assignment
-      if (job?.id && assignedMechIds.length) {
-        await supabase.from("job_mechanics").insert(
-          assignedMechIds.map((mid, i) => ({ job_id: job.id, mechanic_id: mid, role_on_job: i === 0 ? "lead" : "assist" }))
-        );
+    try {
+      let clientId: string | null = null;
+      if (customerName || customerPhone) {
+        let existingClient: { id: string } | null = null;
+        if (customerPhone) {
+          const { data } = await supabase
+            .from("clients")
+            .select("id")
+            .eq("phone_primary", customerPhone)
+            .limit(1)
+            .maybeSingle();
+          existingClient = (data as { id: string } | null) ?? null;
+        }
+        if (!existingClient && customerName) {
+          const { data } = await supabase
+            .from("clients")
+            .select("id")
+            .eq("name", customerName)
+            .limit(1)
+            .maybeSingle();
+          existingClient = (data as { id: string } | null) ?? null;
+        }
+
+        const clientPayload = {
+          name: customerName || normalizedPlate,
+          phone_primary: customerPhone || null,
+          source: clientSource || null,
+          source_detail: clientSourceDetail || null,
+          referred_by: clientSource === "referral" ? (clientSourceDetail || null) : null,
+        };
+
+        if (existingClient?.id) {
+          const { error } = await supabase.from("clients").update(clientPayload).eq("id", existingClient.id);
+          if (error) throw error;
+          clientId = existingClient.id;
+        } else {
+          const { data, error } = await supabase.from("clients").insert(clientPayload).select("id").single();
+          if (error) throw error;
+          clientId = data.id;
+        }
       }
+
+      let vehicleId: string | null = null;
+      const { data: existingVehicle } = await supabase
+        .from("vehicles")
+        .select("id")
+        .eq("plate", normalizedPlate)
+        .limit(1)
+        .maybeSingle();
+      const vehiclePayload = {
+        client_id: clientId,
+        plate: normalizedPlate,
+        make: make.trim() || null,
+        model: model.trim() || null,
+        color: aiResult?.color ?? null,
+        detected_by_ai: Boolean(aiResult),
+      };
+
+      if (existingVehicle?.id) {
+        const { error } = await supabase.from("vehicles").update(vehiclePayload).eq("id", existingVehicle.id);
+        if (error) throw error;
+        vehicleId = existingVehicle.id;
+      } else {
+        const { data, error } = await supabase.from("vehicles").insert(vehiclePayload).select("id").single();
+        if (error) throw error;
+        vehicleId = data.id;
+      }
+
+      const { data: job, error: jobError } = await supabase.from("jobs").insert({
+        plate: normalizedPlate,
+        vehicle_id: vehicleId,
+        client_id: clientId,
+        customer_name: customerName || null,
+        customer_phone: customerPhone || null,
+        vehicle_label: vehicleLabel,
+        mechanic: selectedMechanic?.name ?? null,
+        assigned_mechanic_id: assignedMechId || null,
+        complaint: complaint || null,
+        reported_problem: complaint || null,
+        service_type: serviceType,
+        paint_color_code: serviceType === "body" ? (paintCode || null) : null,
+        estimate: 0,
+        has_insurance: hasInsurance,
+        insurance_company: hasInsurance ? (insuranceCompany || null) : null,
+        insurance_policy_no: hasInsurance ? (insurancePolicy || null) : null,
+        lead_source: clientSource || null,
+        lead_source_detail: clientSourceDetail || null,
+        status: "diagnosis",
+        created_by: userId ?? null,
+      }).select("id").single();
+      if (jobError) throw jobError;
+
+      if (job?.id && assignedMechId) {
+        const { error } = await supabase.from("job_mechanics").upsert(
+          { job_id: job.id, mechanic_id: assignedMechId, role_on_job: "lead" },
+          { onConflict: "job_id,mechanic_id" },
+        );
+        if (error) throw error;
+      }
+
+      const draftPhotos = Object.entries(photos) as Array<[JobCardPhotoKind, JobCardPhotoDraft]>;
+      if (job?.id && draftPhotos.length > 0) {
+        const rows: Array<{ job_id: string; kind: JobCardPhotoKind; storage_path: string; uploaded_by: string | null }> = [];
+        for (const [kind, photo] of draftPhotos) {
+          const ext = photo.file.name.split(".").pop()?.toLowerCase() || "jpg";
+          const storagePath = `${job.id}/${kind}-${Date.now()}.${ext}`;
+          const { error } = await supabase.storage.from("job-card-photos").upload(storagePath, photo.file, { upsert: true });
+          if (error) throw error;
+          rows.push({
+            job_id: job.id,
+            kind,
+            storage_path: storagePath,
+            uploaded_by: userId ?? null,
+          });
+        }
+        if (rows.length > 0) {
+          const { error } = await supabase.from("job_card_photos").insert(rows);
+          if (error) throw error;
+        }
+      }
+
       toast.success("Job card created — number assigned");
+      resetForm();
       onCreated();
+    } catch (error: any) {
+      toast.error(error.message ?? "Could not create the job card");
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <Card className="p-6 max-w-3xl">
-      <h3 className="font-semibold mb-4 flex items-center gap-2"><Plus className="h-4 w-4 text-primary" />New Check-In</h3>
+    <Card className="max-w-4xl p-6">
+      <h3 className="mb-4 flex items-center gap-2 font-semibold"><Plus className="h-4 w-4 text-primary" />New Check-In</h3>
 
       {history.count > 0 && (
-        <div className="mb-4 rounded-md border-2 border-amber-500/40 bg-amber-500/10 p-3 text-sm flex items-start gap-2">
-          <History className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+        <div className="mb-4 flex items-start gap-2 rounded-md border-2 border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+          <History className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <div>
-            <p className="font-semibold text-amber-900 dark:text-amber-200">Welcome back! This vehicle has {history.count} previous job{history.count > 1 ? "s" : ""}.</p>
+            <p className="font-semibold text-amber-900 dark:text-amber-200">
+              Welcome back! This vehicle has {history.count} previous job{history.count > 1 ? "s" : ""}.
+            </p>
             <p className="text-xs text-amber-700 dark:text-amber-300">Last job: {history.lastJobNo}. Past history will auto-link to this new job.</p>
           </div>
         </div>
@@ -546,23 +740,23 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
       <form onSubmit={submit} className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <Label>Customer name</Label>
-          <Input placeholder="Customer name" value={customer} onChange={e => setCustomer(e.target.value)} />
+          <Input placeholder="Customer name" value={customer} onChange={(e) => setCustomer(e.target.value)} />
         </div>
         <div className="space-y-2">
           <Label>Phone</Label>
-          <Input placeholder="+254 7XX XXX XXX" value={phone} onChange={e => setPhone(e.target.value)} />
+          <Input placeholder="+254 7XX XXX XXX" value={phone} onChange={(e) => setPhone(e.target.value)} />
         </div>
         <div className="space-y-2">
-          <Label>Plate Number</Label>
+          <Label>Plate number</Label>
           <div className="flex gap-2">
-            <Input placeholder="KCA 123A" value={plate} onChange={e => setPlate(e.target.value)} required />
-            <CameraInput onPick={(_, url) => setPhotos(p => ({ ...p, plate: url }))} />
+            <Input placeholder="KCA 123A" value={plate} onChange={(e) => setPlate(e.target.value)} required />
+            <CameraInput onPick={(file, preview) => setPhotos((current) => ({ ...current, plate: { file, preview } }))} />
           </div>
-          {photos.plate && <img src={photos.plate} alt="plate" className="h-12 rounded mt-1" />}
+          {photos.plate && <img src={photos.plate.preview} alt="plate" className="mt-1 h-12 rounded" />}
         </div>
         <div className="space-y-2">
           <Label>Make</Label>
-          <Input list="vehicle-makes" placeholder="Mazda" value={make} onChange={e => setMake(e.target.value)} />
+          <Input list="vehicle-makes" placeholder="Mazda" value={make} onChange={(e) => setMake(e.target.value)} />
           <datalist id="vehicle-makes">
             <option value="Mazda" /><option value="Toyota" /><option value="Nissan" /><option value="Honda" />
             <option value="Mitsubishi" /><option value="Subaru" /><option value="Suzuki" /><option value="Isuzu" />
@@ -574,9 +768,9 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
           <Label>Model</Label>
           <Input
             list={make.toLowerCase() === "mazda" ? "mazda-models" : undefined}
-            placeholder={make.toLowerCase() === "mazda" ? "Demio / Axela / CX-5…" : "Demio, Premio, Note…"}
+            placeholder={make.toLowerCase() === "mazda" ? "Demio / Axela / CX-5..." : "Demio, Premio, Note..."}
             value={model}
-            onChange={e => setModel(e.target.value)}
+            onChange={(e) => setModel(e.target.value)}
           />
           <datalist id="mazda-models">
             <option value="Demio" /><option value="Axela" /><option value="Atenza" />
@@ -587,7 +781,7 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
             <option value="Familia" /><option value="RX-8" /><option value="MX-5" />
             <option value="Tribute" /><option value="Roadster" />
           </datalist>
-          {make.toLowerCase() === "mazda" && <p className="text-[11px] text-muted-foreground">🔧 Mazda-friendly: pick a Mazda model from the dropdown.</p>}
+          {make.toLowerCase() === "mazda" && <p className="text-[11px] text-muted-foreground">Mazda-friendly: pick a Mazda model from the dropdown.</p>}
         </div>
         <div className="space-y-2">
           <Label>Service type</Label>
@@ -603,80 +797,87 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
             </SelectContent>
           </Select>
         </div>
-        {serviceType === "body" && (
+        <div className="space-y-2">
+          <Label>Assigned mechanic</Label>
+          <Select value={assignedMechId || "unassigned"} onValueChange={(value) => setAssignedMechId(value === "unassigned" ? "" : value)}>
+            <SelectTrigger><SelectValue placeholder="Pick mechanic" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unassigned">Unassigned for now</SelectItem>
+              {mechRoster.map((mechanic) => (
+                <SelectItem key={mechanic.id} value={mechanic.id}>
+                  {mechanic.name}{mechanic.specialties?.length ? ` · ${mechanic.specialties.join(", ")}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {serviceType === "body" ? (
           <div className="space-y-2">
             <Label className="flex items-center gap-1"><Palette className="h-3 w-3" />Paint colour code</Label>
-            <Input placeholder="e.g. 1G3 (Toyota Magnetic Gray)" value={paintCode} onChange={e => setPaintCode(e.target.value)} />
+            <Input placeholder="e.g. 1G3 (Toyota Magnetic Gray)" value={paintCode} onChange={(e) => setPaintCode(e.target.value)} />
           </div>
-        )}
-        <div className="md:col-span-2 space-y-2">
-          <Label>Assigned mechanics <span className="text-xs text-muted-foreground font-normal">(pick one or more — first picked is the lead)</span></Label>
-          {mechRoster.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No mechanics yet. Add one in <strong>Tools → Mechanic</strong>.</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {mechRoster.map(m => {
-                const on = assignedMechIds.includes(m.id);
-                const isLead = on && assignedMechIds[0] === m.id;
-                return (
-                  <button
-                    type="button" key={m.id} onClick={() => toggleMech(m.id)}
-                    className={`px-3 py-1.5 rounded-full text-xs border transition flex items-center gap-1.5 ${on ? "bg-primary text-primary-foreground border-primary" : "bg-muted/40 hover:bg-muted"}`}
-                    title={(m.specialties ?? []).join(", ")}
-                  >
-                    <User className="h-3 w-3" />
-                    {m.name}
-                    <span className="opacity-70 capitalize">· {m.level}</span>
-                    {isLead && <Badge variant="secondary" className="ml-1 h-4 text-[9px]">LEAD</Badge>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+        ) : <div />}
+        <div className="space-y-2">
+          <Label>How did the client come to us?</Label>
+          <Select value={clientSource} onValueChange={setClientSource}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CLIENT_SOURCE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>{clientSource === "referral" ? "Referral details" : "Source details"}</Label>
+          <Input
+            placeholder={clientSource === "referral" ? "Friend's name or who referred them" : "Campaign, platform, or useful note"}
+            value={clientSourceDetail}
+            onChange={(e) => setClientSourceDetail(e.target.value)}
+          />
         </div>
         <div className="md:col-span-2 space-y-2">
           <Label>Reported problem</Label>
-          <Textarea placeholder="What the customer reported when bringing in the car…" value={complaint} onChange={e => setComplaint(e.target.value)} />
+          <Textarea placeholder="What the customer reported when bringing in the car..." value={complaint} onChange={(e) => setComplaint(e.target.value)} />
         </div>
 
-        <div className="md:col-span-2 space-y-2 rounded-md border p-3 bg-muted/30">
-          <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-            <input type="checkbox" checked={hasInsurance} onChange={e => setHasInsurance(e.target.checked)} className="h-4 w-4 accent-primary" />
+        <div className="md:col-span-2 space-y-2 rounded-md border bg-muted/30 p-3">
+          <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+            <input type="checkbox" checked={hasInsurance} onChange={(e) => setHasInsurance(e.target.checked)} className="h-4 w-4 accent-primary" />
             <ShieldAlert className="h-4 w-4 text-primary" />
             This car is covered by insurance
           </label>
           {hasInsurance && (
             <div className="grid grid-cols-2 gap-3 pt-2">
-              <div><Label className="text-xs">Insurance company</Label><Input value={insuranceCompany} onChange={e => setInsuranceCompany(e.target.value)} placeholder="e.g. Britam, Jubilee, AAR" /></div>
-              <div><Label className="text-xs">Policy number</Label><Input value={insurancePolicy} onChange={e => setInsurancePolicy(e.target.value)} placeholder="POL-123456" /></div>
+              <div><Label className="text-xs">Insurance company</Label><Input value={insuranceCompany} onChange={(e) => setInsuranceCompany(e.target.value)} placeholder="e.g. Britam, Jubilee, AAR" /></div>
+              <div><Label className="text-xs">Policy number</Label><Input value={insurancePolicy} onChange={(e) => setInsurancePolicy(e.target.value)} placeholder="POL-123456" /></div>
             </div>
           )}
         </div>
         <div className="md:col-span-2 space-y-2">
           <div className="flex items-center justify-between">
-            <Label>Vehicle photos (4 angles) — tap to take photo or pick from files</Label>
+            <Label>Vehicle photos plus door jamb</Label>
             <Button type="button" size="sm" variant="outline" onClick={analysePhotos} disabled={aiBusy}>
-              {aiBusy ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Sparkles className="h-3 w-3 mr-1" />}
-              {aiBusy ? "Analysing…" : "AI detect make / model / damage"}
+              {aiBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Sparkles className="mr-1 h-3 w-3" />}
+              {aiBusy ? "Analysing..." : "AI detect make / model / damage"}
             </Button>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-            {["front", "back", "left", "right"].map(side => (
-              <div key={side} className="aspect-square rounded-lg border-2 border-dashed border-border hover:border-primary hover:bg-muted/40 flex flex-col items-center justify-center gap-1 relative overflow-hidden">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 sm:gap-3">
+            {[...VEHICLE_AI_PHOTO_KINDS, "door_jamb" as const].map((side) => (
+              <div key={side} className="relative flex aspect-square flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border-2 border-dashed border-border hover:border-primary hover:bg-muted/40">
                 {photos[side] ? (
-                  <img src={photos[side]} alt={side} className="absolute inset-0 w-full h-full object-cover" />
+                  <img src={photos[side]?.preview} alt={side} className="absolute inset-0 h-full w-full object-cover" />
                 ) : (
-                  <span className="text-[11px] text-muted-foreground capitalize font-medium">{side}</span>
+                  <span className="text-[11px] font-medium text-muted-foreground">{JOB_CARD_PHOTO_LABELS[side]}</span>
                 )}
                 <div className="absolute bottom-1.5 right-1.5">
                   <CameraInput
                     size="sm"
-                    onPick={(_, url) => {
-                      setPhotos(p => {
-                        const next = { ...p, [side]: url };
-                        // Auto-scan first captured photo to fill plate / make / model when empty
-                        const firstPhoto = !p.front && !p.back && !p.left && !p.right;
-                        if (firstPhoto && (!plate || !make || !model)) {
+                    onPick={(file, preview) => {
+                      setPhotos((current) => {
+                        const next = { ...current, [side]: { file, preview } };
+                        const firstVehiclePhoto = VEHICLE_AI_PHOTO_KINDS.every((kind) => !current[kind]);
+                        if (side !== "door_jamb" && firstVehiclePhoto && (!plate || !make || !model)) {
                           setTimeout(() => analysePhotos(), 50);
                         }
                         return next;
@@ -688,25 +889,25 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
             ))}
           </div>
           {aiResult && (
-            <div className="rounded-md border bg-muted/30 p-3 text-xs space-y-1">
-              <p className="font-semibold flex items-center gap-1"><Sparkles className="h-3 w-3 text-primary" /> AI suggestion (you can edit any field)</p>
+            <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-xs">
+              <p className="flex items-center gap-1 font-semibold"><Sparkles className="h-3 w-3 text-primary" />AI suggestion (you can edit any field)</p>
               <p>Make / Model: <strong>{aiResult.make || "?"} {aiResult.model || ""}</strong> {aiResult.year_guess && `(${aiResult.year_guess})`} · confidence {Math.round((aiResult.confidence ?? 0) * 100)}%</p>
               {aiResult.color && <p>Colour: {aiResult.color}</p>}
               {Array.isArray(aiResult.visible_problems) && aiResult.visible_problems.length > 0 && (
-                <ul className="list-disc list-inside">
-                  {aiResult.visible_problems.map((p: any, i: number) => (
-                    <li key={i}><strong className="capitalize">{p.severity}</strong> — {p.area}: {p.problem}</li>
+                <ul className="list-inside list-disc">
+                  {aiResult.visible_problems.map((photoIssue: any, index: number) => (
+                    <li key={index}><strong className="capitalize">{photoIssue.severity}</strong> - {photoIssue.area}: {photoIssue.problem}</li>
                   ))}
                 </ul>
               )}
-              {(!aiResult.make && !aiResult.model) && <p className="text-muted-foreground italic">Couldn't detect make/model from these photos — please key it in.</p>}
+              {(!aiResult.make && !aiResult.model) && <p className="italic text-muted-foreground">Couldn't detect make/model from these photos — please key it in.</p>}
             </div>
           )}
         </div>
         <div className="md:col-span-2 flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={() => { setPlate(""); setCustomer(""); setPhone(""); setAssignedMechIds([]); setMake(""); setModel(""); setComplaint(""); setPhotos({}); setPaintCode(""); setAiResult(null); }}>Reset</Button>
+          <Button type="button" variant="outline" onClick={resetForm}>Reset</Button>
           <Button type="submit" disabled={busy} className="bg-gradient-primary">
-            <Plus className="h-4 w-4 mr-2" />{busy ? "Creating…" : "Create Job Card"}
+            <Plus className="mr-2 h-4 w-4" />{busy ? "Creating..." : "Create Job Card"}
           </Button>
         </div>
       </form>
@@ -720,7 +921,8 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   onBack: () => void;
   onMoveStatus: (s: JobStatus) => void;
 }) {
-  const { hasRole } = useAuth();
+  const { hasRole, user } = useAuth();
+  const isSuperAdmin = hasRole("super_admin");
   const canApproveFitting = hasRole("mechanic") || hasRole("admin") || hasRole("super_admin") || hasRole("storekeeper") || hasRole("manager") || hasRole("director");
   const isMechanicOnly = hasRole("mechanic") && !(hasRole("admin") || hasRole("super_admin") || hasRole("director") || hasRole("manager") || hasRole("reception") || hasRole("storekeeper"));
   const canSeeFinances = !isMechanicOnly;
@@ -744,7 +946,18 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const [discountReason, setDiscountReason] = useState("");
   const [workPerformed, setWorkPerformed] = useState("");
   const [paymentMode, setPaymentMode] = useState("cash");
+  const [paymentReference, setPaymentReference] = useState("");
   const [amountPaid, setAmountPaid] = useState("0");
+  const [depositRequired, setDepositRequired] = useState("0");
+  const [depositPaid, setDepositPaid] = useState("0");
+  const [payerType, setPayerType] = useState<"client" | "insurance">("client");
+  const [payerName, setPayerName] = useState("");
+  const [paymentBypass, setPaymentBypass] = useState(false);
+  const [paymentBypassReason, setPaymentBypassReason] = useState("");
+  const [paymentBypassAuthorizedBy, setPaymentBypassAuthorizedBy] = useState("");
+  const [jobPhotos, setJobPhotos] = useState<Array<{ kind: string; url: string }>>([]);
+  const [serviceKitFuel, setServiceKitFuel] = useState<"petrol" | "diesel">("petrol");
+  const [serviceKitSelection, setServiceKitSelection] = useState<string[]>([]);
   const [mechanicsList, setMechanicsList] = useState<Array<{ id: string; name: string; phone: string | null; specialties: string[] }>>([]);
   const [forwardOpen, setForwardOpen] = useState(false);
   const [forwardSpecialty, setForwardSpecialty] = useState<string>("all");
@@ -765,6 +978,13 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       setDiscountAmt(String((j as any).discount_amount ?? 0));
       setDiscountReason((j as any).discount_reason ?? "");
       setWorkPerformed((j as any).work_performed ?? "");
+      setDepositRequired(String((j as any).deposit_required ?? 0));
+      setDepositPaid(String((j as any).deposit_paid ?? 0));
+      setPayerType(((j as any).payer_type === "insurance" ? "insurance" : "client"));
+      setPayerName((j as any).payer_name ?? ((j as any).payer_type === "insurance" ? ((j as any).insurance_company ?? "") : ((j as any).customer_name ?? "")));
+      setPaymentBypass(Boolean((j as any).payment_bypass));
+      setPaymentBypassReason((j as any).payment_bypass_reason ?? "");
+      setPaymentBypassAuthorizedBy((j as any).payment_bypass_authorized_by ?? "");
       setAmountPaid(String((j as any).receipt_amount ?? 0));
       setForwardMechId((j as any).assigned_mechanic_id ?? "");
     }
@@ -777,16 +997,35 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       supabase.from("petty_cash_entries").select("*").eq("job_id", jobId),
       supabase.from("invoices").select("*").eq("job_id", jobId),
       supabase.from("job_line_items").select("*").eq("job_id", jobId).order("position", { ascending: true }),
-      supabase.from("parts").select("id, name, sku, unit_price").order("name").limit(2000),
+      supabase.from("parts").select("id, name, sku, unit_price, unit_cost").order("name").limit(2000),
       supabase.from("part_stock").select("part_id, qty"),
     ]);
     const { data: mechs } = await supabase.from("mechanics").select("id, name, phone, specialties").eq("active", true).order("name");
     setMechanicsList((mechs ?? []) as any);
+    if (isSuperAdmin) {
+      const { data: photoRows } = await supabase
+        .from("job_card_photos")
+        .select("kind, storage_path")
+        .eq("job_id", jobId)
+        .order("created_at", { ascending: true });
+      const signedPhotos = await Promise.all((photoRows ?? []).map(async (row: any) => {
+        const { data } = await supabase.storage.from("job-card-photos").createSignedUrl(row.storage_path, 60 * 60);
+        return data?.signedUrl ? { kind: row.kind, url: data.signedUrl } : null;
+      }));
+      setJobPhotos(signedPhotos.filter((row): row is { kind: string; url: string } => Boolean(row)));
+    } else {
+      setJobPhotos([]);
+    }
     setPartsUsed(m ?? []);
     setPettyForJob(p ?? []);
     setInvoicesForJob(inv ?? []);
     setLineItems(li ?? []);
     setPartsCatalog(cat ?? []);
+    const paymentDoc = (inv ?? []).find((row: any) => row.doc_type === "receipt")
+      ?? (inv ?? []).find((row: any) => row.doc_type === "invoice")
+      ?? (inv ?? []).find((row: any) => row.doc_type === "deposit_invoice");
+    if (paymentDoc?.payment_mode) setPaymentMode(String(paymentDoc.payment_mode));
+    if (paymentDoc?.payment_reference) setPaymentReference(String(paymentDoc.payment_reference));
     const stockMap: Record<string, number> = {};
     (stock ?? []).forEach((s: any) => {
       stockMap[s.part_id] = (stockMap[s.part_id] ?? 0) + Number(s.qty || 0);
@@ -844,7 +1083,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       }
     }
   };
-  useEffect(() => { load(); }, [jobId]);
+  useEffect(() => { load(); }, [jobId, isSuperAdmin]);
 
   if (!job) return <p className="text-center text-muted-foreground py-8">Loading…</p>;
 
@@ -854,31 +1093,66 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const lineSubtotal = calculateLineSubtotal(lineItems);
   const discount = Number(discountAmt || 0);
   const lineTotal = calculateLineTotal(lineItems, discount);
-  const profit = lineSubtotal - partsCost - pettyTotal;
+  const profit = lineTotal - partsCost - pettyTotal;
+  const depositRequiredValue = Math.max(0, Number(depositRequired || 0));
+  const depositPaidValue = Math.max(0, Number(depositPaid || 0));
+  const totalPaidValue = Math.max(0, Number(amountPaid || 0));
+  const payerLabel = (
+    payerName.trim()
+    || (payerType === "insurance" ? (job.insurance_company ?? "") : (job.customer_name ?? ""))
+  ).trim();
+  const leadSourceLabel = job.lead_source ? (LEAD_SOURCE_LABELS[job.lead_source] ?? job.lead_source) : null;
+  const serviceKitItems = SERVICE_KIT_PRESETS[serviceKitFuel];
 
   // ===== STRICT DOC GATING (real garage flow) =====
   // Quotation: available once we've moved past "diagnosis" (so a diagnosis is on file)
   // Invoice  : only after work is "completed"
   // Receipt  : only after the customer has paid (status "closed" OR amount_paid >= total)
   const canQuotation = job.status !== "diagnosis";
+  const canDepositInvoice = canQuotation && depositRequiredValue > 0;
   const canInvoice = ["completed", "closed"].includes(job.status);
-  const canReceipt = job.status === "closed" || Number(amountPaid || 0) >= lineTotal && lineTotal > 0;
-  const currentStage: "quotation" | "invoice" | "receipt" =
-    canReceipt ? "receipt" : canInvoice ? "invoice" : "quotation";
+  const canReceipt = !paymentBypass && (job.status === "closed" || (totalPaidValue >= lineTotal && lineTotal > 0));
+  const currentStage: DocumentKind =
+    canReceipt ? "receipt" : canInvoice ? "invoice" : canDepositInvoice ? "deposit_invoice" : "quotation";
 
-  const buildDocData = (kind: "quotation" | "invoice" | "receipt") => ({
-    doc_no: job.job_no,
+  const buildDocData = (kind: DocumentKind) => kind === "deposit_invoice"
+    ? ({
+        doc_no: getDocumentNumber(job.job_no, kind),
+        job_no: job.job_no,
+        date: new Date(job.started_at).toISOString().slice(0, 10),
+        customer_name: payerLabel || (job.customer_name ?? ""),
+        customer_phone: job.customer_phone ?? "",
+        plate: job.plate,
+        lines: [{
+          description: `Deposit for job ${job.job_no} - ${job.plate}`,
+          qty: 1,
+          unit_price: depositRequiredValue,
+        }],
+        served_by: job.mechanic ?? undefined,
+        discount: 0,
+        amount_paid: depositPaidValue,
+        notes: "Deposit requested before work starts.",
+        vat: false,
+      })
+    : ({
+    doc_no: getDocumentNumber(job.job_no, kind),
     job_no: job.job_no,
-    date: new Date(job.started_at).toISOString().slice(0, 10),
-    customer_name: job.customer_name ?? "",
+    date:
+      kind === "receipt"
+        ? String(job.paid_at ?? new Date().toISOString()).slice(0, 10)
+        : kind === "invoice"
+          ? String(job.completed_at ?? job.started_at).slice(0, 10)
+          : new Date(job.started_at).toISOString().slice(0, 10),
+    customer_name: payerLabel || (job.customer_name ?? ""),
     customer_phone: job.customer_phone ?? "",
     plate: job.plate,
     lines: lineItems.length > 0
       ? lineItems.map((l) => ({ description: `${l.kind === "labour" ? "Labour: " : ""}${l.description}`, qty: Number(l.qty || 0), unit_price: Number(l.unit_price || 0) }))
       : [{ description: `${job.service_type ?? "Service"} — ${job.reported_problem ?? job.complaint ?? "Workshop services"}`, qty: 1, unit_price: lineSubtotal || Number(job.estimate || 0) }],
     served_by: job.mechanic ?? undefined,
-    discount: kind === "quotation" ? 0 : discount,
-    amount_paid: kind === "receipt" ? Number(amountPaid || 0) : undefined,
+    discount,
+    amount_paid: kind === "receipt" ? Math.max(0, totalPaidValue - depositPaidValue) : kind === "invoice" ? totalPaidValue : undefined,
+    notes: workPerformed || reportedProblem || job.complaint || undefined,
     vat: false,
   });
 
@@ -1010,69 +1284,99 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     if (!inStock) toast.message(`${part.name} is out of stock — set price manually`);
   };
 
-  const syncLinkedInvoice = async (jobSnapshot: Job, rows: any[], subtotal: number, total: number, amountPaidValue: number) => {
-    const invoiceStatus = amountPaidValue >= total && total > 0
-      ? "paid"
-      : subtotal > 0 || total > 0
-        ? "issued"
-        : "draft";
-    const docDateSource = jobSnapshot.paid_at || jobSnapshot.completed_at || jobSnapshot.started_at || new Date().toISOString();
-    const payload: any = {
-      invoice_no: jobSnapshot.job_no,
-      plate: jobSnapshot.plate,
-      vehicle_id: (jobSnapshot as any).vehicle_id ?? null,
-      client_id: (jobSnapshot as any).client_id ?? null,
-      service_type: jobSnapshot.service_type ?? "service",
-      parts_source: "job_card",
-      time_in: jobSnapshot.started_at,
-      time_out: jobSnapshot.completed_at ?? jobSnapshot.paid_at ?? null,
-      date: String(docDateSource).slice(0, 10),
-      amount: subtotal,
-      discount,
-      discount_by: discountReason || null,
-      amount_paid: amountPaidValue,
-      technicians: jobSnapshot.mechanic ?? null,
-      customer_phone: jobSnapshot.customer_phone ?? null,
-      status: invoiceStatus,
-      notes: workPerformed || reportedProblem || jobSnapshot.complaint || null,
-      job_id: jobSnapshot.id,
-      doc_type: "invoice",
-    };
-
-    const { data: existingRows, error: existingError } = await supabase
-      .from("invoices")
-      .select("id")
-      .eq("job_id", jobSnapshot.id)
-      .eq("doc_type", "invoice")
-      .order("created_at", { ascending: true })
-      .limit(1);
-    if (existingError) throw existingError;
-
-    let invoiceId = existingRows?.[0]?.id ?? null;
-    if (invoiceId) {
-      const { error } = await supabase.from("invoices").update(payload).eq("id", invoiceId);
-      if (error) throw error;
-    } else {
-      const { data, error } = await supabase.from("invoices").insert(payload).select("id").single();
-      if (error) throw error;
-      invoiceId = data?.id ?? null;
+  const addServiceKitItems = async () => {
+    if (serviceKitSelection.length === 0) {
+      toast.error("Pick at least one service kit item");
+      return;
     }
-    if (!invoiceId) return;
+    const payload = serviceKitSelection.map((item, index) => {
+      const matchedPart = partsCatalog.find((part) => part.name.toLowerCase() === item.toLowerCase());
+      return {
+        job_id: jobId,
+        kind: "part",
+        source: "service_kit",
+        position: lineItems.length + index,
+        description: item,
+        qty: 1,
+        unit_price: Number(matchedPart?.unit_price || 0),
+        part_id: matchedPart?.id ?? null,
+      };
+    });
 
+    const { data, error } = await supabase.from("job_line_items").insert(payload).select();
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+
+    const next = [...lineItems, ...(data ?? [])];
+    setLineItems(next);
+    setServiceKitSelection([]);
+    await persistFinancialSnapshot({ rows: next, silent: true });
+    toast.success("Service kit items added");
+  };
+
+  const syncPartLineSales = async (jobSnapshot: Job, rows: any[]) => {
+    const saleRows = rows.filter((row) =>
+      row.kind === "part" && row.part_id && !row.part_request_id && Number(row.qty || 0) > 0,
+    );
+
+    const { error: clearError } = await supabase
+      .from("stock_movements")
+      .delete()
+      .eq("job_id", jobSnapshot.id)
+      .like("reference", "job-line:%");
+    if (clearError) throw clearError;
+    if (saleRows.length === 0) return;
+
+    const { data: primaryLocation } = await supabase
+      .from("locations")
+      .select("id")
+      .eq("kind", "garage_store")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    let fallbackLocation: { id: string } | null = null;
+    if (!primaryLocation?.id) {
+      const { data } = await supabase
+        .from("locations")
+        .select("id")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      fallbackLocation = (data as { id: string } | null) ?? null;
+    }
+    const locationId = primaryLocation?.id ?? fallbackLocation?.id ?? null;
+    if (!locationId) return;
+
+    const movementPayload = saleRows.map((row) => {
+      const part = partsCatalog.find((entry) => entry.id === row.part_id);
+      return {
+        part_id: row.part_id,
+        location_id: locationId,
+        type: "sale",
+        qty: Number(row.qty || 0),
+        unit_price: Number(row.unit_price || 0),
+        reference: `job-line:${row.id}`,
+        note: `Issued from financial summary for ${jobSnapshot.job_no}`,
+        buy_price: Number(part?.unit_cost || 0),
+        sell_price: Number(row.unit_price || 0),
+        created_by: user?.id ?? null,
+        job_id: jobSnapshot.id,
+      };
+    });
+
+    const { error } = await supabase.from("stock_movements").insert(movementPayload);
+    if (error) throw error;
+  };
+
+  const syncInvoiceItems = async (invoiceId: string, rows: any[]) => {
     const { error: clearError } = await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
     if (clearError) throw clearError;
+    if (rows.length === 0) return;
 
-    const itemRows = rows.length > 0
-      ? rows
-      : [{
-          kind: "labour",
-          description: `${jobSnapshot.service_type ?? "Service"} - ${reportedProblem || (jobSnapshot.complaint ?? "Workshop services")}`,
-          qty: 1,
-          unit_price: subtotal || Number(jobSnapshot.estimate || 0),
-        }];
-
-    const { error: itemError } = await supabase.from("invoice_items").insert(
-      itemRows.map((row: any) => ({
+    const { error } = await supabase.from("invoice_items").insert(
+      rows.map((row: any) => ({
         invoice_id: invoiceId,
         kind: row.kind ?? "part",
         description: row.description,
@@ -1080,12 +1384,193 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
         unit_price: Number(row.unit_price || 0),
       })),
     );
-    if (itemError) throw itemError;
+    if (error) throw error;
+  };
+
+  const syncJobDocuments = async (jobSnapshot: Job, rows: any[], subtotal: number, total: number, amountPaidValue: number) => {
+    const trackedKinds: DocumentKind[] = ["quotation", "deposit_invoice", "invoice", "receipt"];
+    const { data: existingDocs, error: existingError } = await supabase
+      .from("invoices")
+      .select("id, doc_type")
+      .eq("job_id", jobSnapshot.id)
+      .in("doc_type", trackedKinds);
+    if (existingError) throw existingError;
+
+    const existingByKind = new Map(
+      (existingDocs ?? []).map((row: any) => [row.doc_type as DocumentKind, row.id as string]),
+    );
+    const keepKinds = new Set<DocumentKind>();
+    const fallbackRows = rows.length > 0
+      ? rows
+      : [{
+          kind: "labour",
+          description: `${jobSnapshot.service_type ?? "Service"} - ${reportedProblem || (jobSnapshot.complaint ?? "Workshop services")}`,
+          qty: 1,
+          unit_price: subtotal || Number(jobSnapshot.estimate || 0),
+        }];
+    const receiptCaptured = Math.max(0, amountPaidValue - depositPaidValue);
+
+    const documents: Array<{ kind: DocumentKind; payload: Record<string, any>; items: any[] }> = [];
+    if (canQuotation || subtotal > 0 || total > 0) {
+      documents.push({
+        kind: "quotation",
+        payload: {
+          invoice_no: getDocumentNumber(jobSnapshot.job_no, "quotation"),
+          plate: jobSnapshot.plate,
+          vehicle_id: (jobSnapshot as any).vehicle_id ?? null,
+          client_id: (jobSnapshot as any).client_id ?? null,
+          service_type: jobSnapshot.service_type ?? "service",
+          parts_source: "job_card",
+          time_in: jobSnapshot.started_at,
+          time_out: null,
+          date: String(jobSnapshot.started_at).slice(0, 10),
+          amount: total,
+          discount,
+          discount_by: discountReason || null,
+          amount_paid: 0,
+          technicians: jobSnapshot.mechanic ?? null,
+          customer_phone: jobSnapshot.customer_phone ?? null,
+          status: canQuotation ? "issued" : "draft",
+          notes: reportedProblem || jobSnapshot.complaint || null,
+          job_id: jobSnapshot.id,
+          doc_type: "quotation",
+          payer_type: payerType,
+          payer_name: payerLabel || null,
+        },
+        items: fallbackRows,
+      });
+    }
+    if (depositRequiredValue > 0) {
+      documents.push({
+        kind: "deposit_invoice",
+        payload: {
+          invoice_no: getDocumentNumber(jobSnapshot.job_no, "deposit_invoice"),
+          plate: jobSnapshot.plate,
+          vehicle_id: (jobSnapshot as any).vehicle_id ?? null,
+          client_id: (jobSnapshot as any).client_id ?? null,
+          service_type: jobSnapshot.service_type ?? "service",
+          parts_source: "job_card",
+          time_in: jobSnapshot.started_at,
+          time_out: null,
+          date: String(jobSnapshot.started_at).slice(0, 10),
+          amount: depositRequiredValue,
+          discount: 0,
+          discount_by: null,
+          amount_paid: depositPaidValue,
+          technicians: jobSnapshot.mechanic ?? null,
+          customer_phone: jobSnapshot.customer_phone ?? null,
+          status: depositPaidValue >= depositRequiredValue && depositRequiredValue > 0 ? "paid" : "issued",
+          notes: "Deposit requested before work starts.",
+          job_id: jobSnapshot.id,
+          doc_type: "deposit_invoice",
+          payer_type: payerType,
+          payer_name: payerLabel || null,
+          payment_mode: paymentMode,
+          payment_reference: paymentReference || null,
+        },
+        items: [{
+          kind: "labour",
+          description: `Deposit for job ${jobSnapshot.job_no} - ${jobSnapshot.plate}`,
+          qty: 1,
+          unit_price: depositRequiredValue,
+        }],
+      });
+    }
+    if (subtotal > 0 || total > 0) {
+      documents.push({
+        kind: "invoice",
+        payload: {
+          invoice_no: getDocumentNumber(jobSnapshot.job_no, "invoice"),
+          plate: jobSnapshot.plate,
+          vehicle_id: (jobSnapshot as any).vehicle_id ?? null,
+          client_id: (jobSnapshot as any).client_id ?? null,
+          service_type: jobSnapshot.service_type ?? "service",
+          parts_source: "job_card",
+          time_in: jobSnapshot.started_at,
+          time_out: jobSnapshot.completed_at ?? jobSnapshot.paid_at ?? null,
+          date: String(jobSnapshot.completed_at ?? jobSnapshot.started_at).slice(0, 10),
+          amount: total,
+          discount,
+          discount_by: discountReason || null,
+          amount_paid: paymentBypass ? 0 : amountPaidValue,
+          technicians: jobSnapshot.mechanic ?? null,
+          customer_phone: jobSnapshot.customer_phone ?? null,
+          status: paymentBypass ? "bypassed" : amountPaidValue >= total && total > 0 ? "paid" : canInvoice ? "issued" : "draft",
+          notes: workPerformed || reportedProblem || jobSnapshot.complaint || null,
+          job_id: jobSnapshot.id,
+          doc_type: "invoice",
+          payer_type: payerType,
+          payer_name: payerLabel || null,
+          payment_mode: paymentMode,
+          payment_reference: paymentReference || null,
+          is_payment_bypassed: paymentBypass,
+          payment_bypass_reason: paymentBypass ? (paymentBypassReason || null) : null,
+          payment_bypass_authorized_by: paymentBypass ? (paymentBypassAuthorizedBy || null) : null,
+        },
+        items: fallbackRows,
+      });
+    }
+    if (!paymentBypass && (canReceipt || receiptCaptured > 0)) {
+      documents.push({
+        kind: "receipt",
+        payload: {
+          invoice_no: getDocumentNumber(jobSnapshot.job_no, "receipt"),
+          plate: jobSnapshot.plate,
+          vehicle_id: (jobSnapshot as any).vehicle_id ?? null,
+          client_id: (jobSnapshot as any).client_id ?? null,
+          service_type: jobSnapshot.service_type ?? "service",
+          parts_source: "job_card",
+          time_in: jobSnapshot.started_at,
+          time_out: jobSnapshot.paid_at ?? jobSnapshot.completed_at ?? null,
+          date: String(jobSnapshot.paid_at ?? new Date().toISOString()).slice(0, 10),
+          amount: receiptCaptured || amountPaidValue,
+          discount: 0,
+          discount_by: null,
+          amount_paid: receiptCaptured || amountPaidValue,
+          technicians: jobSnapshot.mechanic ?? null,
+          customer_phone: jobSnapshot.customer_phone ?? null,
+          status: "paid",
+          notes: "Customer payment received.",
+          job_id: jobSnapshot.id,
+          doc_type: "receipt",
+          payer_type: payerType,
+          payer_name: payerLabel || null,
+          payment_mode: paymentMode,
+          payment_reference: paymentReference || null,
+        },
+        items: fallbackRows,
+      });
+    }
+
+    for (const document of documents) {
+      keepKinds.add(document.kind);
+      const existingId = existingByKind.get(document.kind) ?? null;
+      let invoiceId = existingId;
+      if (existingId) {
+        const { error } = await supabase.from("invoices").update(document.payload).eq("id", existingId);
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase.from("invoices").insert(document.payload).select("id").single();
+        if (error) throw error;
+        invoiceId = data.id;
+      }
+      if (invoiceId) await syncInvoiceItems(invoiceId, document.items);
+    }
+
+    const staleIds = (existingDocs ?? [])
+      .filter((row: any) => !keepKinds.has(row.doc_type as DocumentKind))
+      .map((row: any) => row.id as string);
+    if (staleIds.length > 0) {
+      const { error: deleteItemsError } = await supabase.from("invoice_items").delete().in("invoice_id", staleIds);
+      if (deleteItemsError) throw deleteItemsError;
+      const { error: deleteDocsError } = await supabase.from("invoices").delete().in("id", staleIds);
+      if (deleteDocsError) throw deleteDocsError;
+    }
   };
 
   const persistFinancialSnapshot = async ({
     rows = lineItems,
-    amountPaidValue = Number(amountPaid || 0),
+    amountPaidValue = Math.max(0, Number(amountPaid || 0)),
     extraJobPatch = {},
     silent = true,
   }: {
@@ -1104,6 +1589,13 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       quotation_amount: subtotal,
       invoice_amount: total,
       receipt_amount: Math.max(0, Number(amountPaidValue || 0)),
+      deposit_required: depositRequiredValue,
+      deposit_paid: depositPaidValue,
+      payer_type: payerType,
+      payer_name: payerLabel || null,
+      payment_bypass: paymentBypass,
+      payment_bypass_reason: paymentBypass ? (paymentBypassReason || null) : null,
+      payment_bypass_authorized_by: paymentBypass ? (paymentBypassAuthorizedBy || null) : null,
       ...extraJobPatch,
     };
 
@@ -1116,9 +1608,10 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     const snapshot = { ...job, ...patch } as Job;
     setJob(snapshot);
     try {
-      await syncLinkedInvoice(snapshot, rows, subtotal, total, Math.max(0, Number(amountPaidValue || 0)));
+      await syncPartLineSales(snapshot, rows);
+      await syncJobDocuments(snapshot, rows, subtotal, total, Math.max(0, Number(amountPaidValue || 0)));
     } catch (e: any) {
-      toast.error(e?.message ?? "Saved the job, but invoice sync failed");
+      toast.error(e?.message ?? "Saved the job, but document sync failed");
     }
 
     if (!silent) toast.success("Saved");
@@ -1132,13 +1625,21 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
   const markPaid = async () => {
     if (!canInvoice) { toast.error("Mark the job complete before recording payment"); return; }
-    if (Number(amountPaid || 0) < lineTotal) { toast.error("Amount paid is less than total"); return; }
     const now = new Date().toISOString();
+    if (paymentBypass) {
+      if (!paymentBypassReason.trim() || !paymentBypassAuthorizedBy.trim()) {
+        toast.error("Add the bypass reason and who authorized it");
+        return;
+      }
+    } else if (totalPaidValue < lineTotal) {
+      toast.error("Total paid so far is less than the job total");
+      return;
+    }
     const snapshot = await persistFinancialSnapshot({
-      amountPaidValue: Number(amountPaid || 0),
+      amountPaidValue: totalPaidValue,
       extraJobPatch: {
         status: "closed",
-        paid_at: now,
+        paid_at: paymentBypass ? job.paid_at : now,
         closed_at: now,
         gate_pass_issued: true,
       },
@@ -1148,13 +1649,21 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     try {
       const gatePass = await ensureGatePass(jobId);
       // Trigger PDFs in parallel — receipt and gate pass
-      await Promise.all([
-        generateReceiptPDF({ ...buildDocData("receipt"), payment_mode: paymentMode.toUpperCase() }),
-        downloadGatePass(snapshot, gatePass.pass_no, Number(amountPaid || 0)),
-      ]);
+      if (paymentBypass) {
+        await downloadGatePass(snapshot, gatePass.pass_no, totalPaidValue);
+        toast.success("Payment bypass saved and gate pass downloaded");
+        return;
+      } else {
+        await Promise.all([
+          generateReceiptPDF({ ...buildDocData("receipt"), payment_mode: paymentMode.toUpperCase() }),
+          downloadGatePass(snapshot, gatePass.pass_no, totalPaidValue),
+        ]);
+        toast.success("Paid and receipt/gate pass downloaded");
+        return;
+      }
       toast.success("Paid — receipt & gate pass downloaded");
     } catch (e: any) {
-      toast.error(e?.message ?? "Receipt issued, but PDF download failed");
+      toast.error(e?.message ?? "Payment was saved, but PDF download failed");
     }
     load();
   };
@@ -1463,7 +1972,7 @@ Golden Automotive Solutions`);
             <p className="text-sm text-muted-foreground">{job.vehicle_label ?? "—"} · {job.customer_name ?? "—"}{canSeeFinances ? ` · ${job.customer_phone ?? "—"}` : ""}</p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-muted-foreground capitalize">{currentStage}</p>
+            <p className="text-xs text-muted-foreground">{DOCUMENT_LABELS[currentStage]}</p>
             {canSeeFinances ? (
               <>
                 <p className="text-2xl font-bold">KSh {lineTotal.toLocaleString()}</p>
@@ -1544,6 +2053,25 @@ Golden Automotive Solutions`);
                 </p>
               </div>
             )}
+            {(leadSourceLabel || canSeeFinances) && (
+              <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                <p className="font-semibold mb-2">Intake and billing</p>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {leadSourceLabel && (
+                    <p><span className="text-muted-foreground">How client came to us:</span> {leadSourceLabel}{job.lead_source_detail ? ` - ${job.lead_source_detail}` : ""}</p>
+                  )}
+                  {canSeeFinances && (
+                    <p><span className="text-muted-foreground">Payer:</span> {payerLabel || "Not set"} ({payerType})</p>
+                  )}
+                  {canSeeFinances && (
+                    <p><span className="text-muted-foreground">Deposit:</span> KSh {depositPaidValue.toLocaleString()} / {depositRequiredValue.toLocaleString()}</p>
+                  )}
+                  {canSeeFinances && paymentBypass && (
+                    <p><span className="text-muted-foreground">Payment bypass:</span> {paymentBypassReason || "Reason not set"}{paymentBypassAuthorizedBy ? ` - ${paymentBypassAuthorizedBy}` : ""}</p>
+                  )}
+                </div>
+              </div>
+            )}
             {workPerformed && (
               <div className="border-t pt-4">
                 <h3 className="font-semibold flex items-center gap-2 mb-2"><Wrench className="h-4 w-4 text-primary" />What we ended up doing</h3>
@@ -1610,6 +2138,19 @@ Golden Automotive Solutions`);
                 </div>
               </div>
             </Card>
+            {isSuperAdmin && jobPhotos.length > 0 && (
+              <Card className="p-5">
+                <h3 className="font-semibold flex items-center gap-2 mb-3"><ClipboardList className="h-4 w-4 text-primary" />Private intake photos</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {jobPhotos.map((photo, index) => (
+                    <div key={`${photo.kind}-${index}`} className="space-y-1">
+                      <img src={photo.url} alt={photo.kind} className="h-24 w-full rounded-md border object-cover" />
+                      <p className="text-[11px] capitalize text-muted-foreground">{JOB_CARD_PHOTO_LABELS[photo.kind as JobCardPhotoKind] ?? photo.kind.replaceAll("_", " ")}</p>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
           </div>
         </TabsContent>
 
@@ -1757,6 +2298,44 @@ Golden Automotive Solutions`);
               </div>
             </div>
 
+            <div className="mb-4 rounded-lg border bg-muted/20 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h4 className="font-medium">Service kit</h4>
+                  <p className="text-[11px] text-muted-foreground">Choose petrol or diesel, then add one or several kit items straight into the parts tiles.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Select value={serviceKitFuel} onValueChange={(value) => setServiceKitFuel(value as "petrol" | "diesel")}>
+                    <SelectTrigger className="w-[150px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="petrol">Petrol car</SelectItem>
+                      <SelectItem value="diesel">Diesel car</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button size="sm" variant="outline" onClick={addServiceKitItems}>
+                    <Plus className="h-3 w-3 mr-1" />Add selected
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {serviceKitItems.map((item) => (
+                  <label key={`${serviceKitFuel}-${item}`} className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={serviceKitSelection.includes(item)}
+                      onChange={(e) => setServiceKitSelection((current) => (
+                        e.target.checked ? [...current, item] : current.filter((value) => value !== item)
+                      ))}
+                      className="h-4 w-4 accent-primary"
+                    />
+                    <span>{item}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
             {lineItems.length === 0 ? (
               <p className="text-sm text-muted-foreground py-6 text-center">No items yet. Run AI diagnostic to pre-fill, or add rows manually.</p>
             ) : (
@@ -1778,7 +2357,7 @@ Golden Automotive Solutions`);
             <div className="mt-4 pt-4 border-t grid gap-3 md:grid-cols-3">
               <div>
                 <Label className="text-xs">Discount (KSh)</Label>
-                <Input type="number" value={discountAmt} onChange={(e) => setDiscountAmt(e.target.value)} onBlur={saveFinancialMeta} />
+                <Input type="number" value={discountAmt} onChange={(e) => setDiscountAmt(e.target.value)} />
               </div>
               <div className="md:col-span-2">
                 <Label className="text-xs">Discount reason</Label>
@@ -1794,6 +2373,98 @@ Golden Automotive Solutions`);
               <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Subtotal</p><p className="font-bold">KSh {lineSubtotal.toLocaleString()}</p></div>
               <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Discount</p><p className="font-bold text-success">- KSh {discount.toLocaleString()}</p></div>
               <div className="rounded-md bg-primary/10 p-3"><p className="text-xs text-muted-foreground">Total</p><p className="font-bold text-primary">KSh {lineTotal.toLocaleString()}</p></div>
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-semibold mb-1 flex items-center gap-2"><Receipt className="h-4 w-4 text-primary" />Billing details</h3>
+                <p className="text-[11px] text-muted-foreground">Track deposits first, decide who is paying, and keep the document sync up to date.</p>
+              </div>
+              <Button variant="outline" onClick={saveFinancialMeta}>Save billing details</Button>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <Label className="text-xs">Payer</Label>
+                <Select value={payerType} onValueChange={(value) => setPayerType(value as "client" | "insurance")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="client">Client</SelectItem>
+                    <SelectItem value="insurance">Insurance</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="lg:col-span-2">
+                <Label className="text-xs">{payerType === "insurance" ? "Insurance name" : "Invoice name"}</Label>
+                <Input
+                  value={payerName}
+                  onChange={(e) => setPayerName(e.target.value)}
+                  placeholder={payerType === "insurance" ? (job.insurance_company ?? "Insurance company") : (job.customer_name ?? "Client name")}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Payment reference</Label>
+                <Input value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} placeholder="M-Pesa code / bank ref" />
+              </div>
+              <div>
+                <Label className="text-xs">Deposit required (KSh)</Label>
+                <Input type="number" value={depositRequired} onChange={(e) => setDepositRequired(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Deposit paid (KSh)</Label>
+                <Input type="number" value={depositPaid} onChange={(e) => setDepositPaid(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Total paid so far (KSh)</Label>
+                <Input type="number" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Payment mode</Label>
+                <Select value={paymentMode} onValueChange={setPaymentMode}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="mpesa">M-Pesa</SelectItem>
+                    <SelectItem value="bank">Bank transfer</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+              <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Deposit outstanding</p><p className="font-bold">KSh {Math.max(0, depositRequiredValue - depositPaidValue).toLocaleString()}</p></div>
+              <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Collected so far</p><p className="font-bold">KSh {totalPaidValue.toLocaleString()}</p></div>
+              <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Balance due</p><p className="font-bold">KSh {Math.max(0, lineTotal - totalPaidValue).toLocaleString()}</p></div>
+              <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Payer on documents</p><p className="font-bold">{payerLabel || "Not set"}</p></div>
+            </div>
+
+            <div className="mt-4 rounded-lg border p-4">
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={paymentBypass}
+                  onChange={(e) => setPaymentBypass(e.target.checked)}
+                  className="h-4 w-4 accent-primary"
+                />
+                Bypass payment requirement
+              </label>
+              <p className="mt-1 text-[11px] text-muted-foreground">This is visible inside the system only. It is never printed on the quotation, invoice, receipt, or job card PDFs.</p>
+              {paymentBypass && (
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div>
+                    <Label className="text-xs">Reason for bypass</Label>
+                    <Input value={paymentBypassReason} onChange={(e) => setPaymentBypassReason(e.target.value)} placeholder="Waiver / authorised release / special case" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Authorised by</Label>
+                    <Input value={paymentBypassAuthorizedBy} onChange={(e) => setPaymentBypassAuthorizedBy(e.target.value)} placeholder="Manager / director / insurer" />
+                  </div>
+                </div>
+              )}
             </div>
           </Card>
 
@@ -1815,17 +2486,20 @@ Golden Automotive Solutions`);
                   </Select>
                 </div>
                 <div>
-                  <Label className="text-xs">Amount paid (KSh)</Label>
+                  <Label className="text-xs">Total paid so far (KSh)</Label>
                   <Input type="number" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} />
                 </div>
                 <div className="flex items-end">
-                  <Button className="w-full bg-gradient-primary" onClick={markPaid} disabled={Number(amountPaid || 0) < lineTotal}>
-                    <CheckCircle2 className="h-4 w-4 mr-2" />Mark paid &amp; close
+                  <Button className="w-full bg-gradient-primary" onClick={markPaid} disabled={!paymentBypass && totalPaidValue < lineTotal}>
+                    <CheckCircle2 className="h-4 w-4 mr-2" />{paymentBypass ? "Close with bypass" : "Mark paid &amp; close"}
                   </Button>
                 </div>
               </div>
-              {Number(amountPaid || 0) < lineTotal && (
-                <p className="text-xs text-muted-foreground mt-2">Receipt unlocks once amount paid covers the total.</p>
+              {!paymentBypass && totalPaidValue < lineTotal && (
+                <p className="text-xs text-muted-foreground mt-2">Enter the full amount paid so far, including any deposit, before closing the job.</p>
+              )}
+              {paymentBypass && (
+                <p className="text-xs text-muted-foreground mt-2">A bypass needs both a reason and an authorised-by name before the job can close.</p>
               )}
             </Card>
           )}
@@ -1846,6 +2520,14 @@ Golden Automotive Solutions`);
                 lockedReason="Available after diagnosis is logged."
                 active={currentStage === "quotation"}
                 onDownload={() => generateQuotationPDF(buildDocData("quotation"))}
+              />
+              <DocCard
+                title="Deposit invoice"
+                icon={<DollarSign className="h-4 w-4" />}
+                enabled={canDepositInvoice}
+                lockedReason="Set a deposit amount to unlock this document."
+                active={currentStage === "deposit_invoice"}
+                onDownload={() => generateDepositInvoicePDF(buildDocData("deposit_invoice"))}
               />
               <DocCard
                 title="Invoice"
@@ -1879,7 +2561,7 @@ Golden Automotive Solutions`);
               />
             </div>
             <p className="text-xs text-muted-foreground mt-4">
-              {invoicesForJob.length} saved document{invoicesForJob.length === 1 ? "" : "s"} on file. Manage all printed/saved invoices from the <strong>Invoices</strong> page.
+              {invoicesForJob.length} saved document{invoicesForJob.length === 1 ? "" : "s"} on file. Manage quotations, deposit invoices, invoices, and receipts from the <strong>Invoices</strong> page.
             </p>
           </Card>
         </TabsContent>
@@ -2131,3 +2813,4 @@ function DocCard({
     </div>
   );
 }
+

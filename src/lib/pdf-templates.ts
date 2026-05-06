@@ -19,17 +19,39 @@ const COMPANY = {
 };
 
 async function loadLogo(): Promise<string> {
-  const res = await fetch(logoUrl);
-  const blob = await res.blob();
-  return await new Promise<string>((resolve) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result as string);
-    r.readAsDataURL(blob);
-  });
+  if (!(loadLogo as any)._cache) {
+    (loadLogo as any)._cache = (async () => {
+      const res = await fetch(logoUrl);
+      const blob = await res.blob();
+      return await new Promise<string>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result as string);
+        r.readAsDataURL(blob);
+      });
+    })();
+  }
+  return (loadLogo as any)._cache as Promise<string>;
 }
 
 function fmtKsh(n: number) {
   return `KSh ${Number(n || 0).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+async function drawDocumentWatermark(doc: jsPDF) {
+  const w = doc.internal.pageSize.getWidth();
+  const h = doc.internal.pageSize.getHeight();
+  try {
+    const logo = await loadLogo();
+    const logoW = Math.min(92, w - 30);
+    const logoH = logoW / 3.4;
+    doc.addImage(logo, "PNG", (w - logoW) / 2, (h - logoH) / 2 - 8, logoW, logoH);
+  } catch {
+    // ignore logo issues and still draw the soft text mark below
+  }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(212, 160, 23);
+  doc.text("Golden Automotive Solutions", w / 2, h / 2 + 24, { align: "center" });
 }
 
 // Centred A5 header: logo top-middle, then company name perfectly centred,
@@ -136,13 +158,18 @@ export interface InvoiceData {
 
 // Standard receipt/invoice/quotation size: A5 portrait (148 x 210 mm).
 async function buildBaseDoc() {
-  return new jsPDF({ unit: "mm", format: "a5" });
+  const doc = new jsPDF({ unit: "mm", format: "a5" });
+  await drawDocumentWatermark(doc);
+  return doc;
 }
 
-// ----- INVOICE -----
-export async function generateInvoicePDF(data: InvoiceData) {
+async function generateInvoiceLikePDF(
+  title: string,
+  filePrefix: string,
+  data: InvoiceData,
+) {
   const doc = await buildBaseDoc();
-  const headerY = await drawHeader(doc, "INVOICE");
+  const headerY = await drawHeader(doc, title);
   const w = doc.internal.pageSize.getWidth();
   const half = (w - 8 - 8 - 4) / 2; // two columns with 4mm gap
   drawMetaBox(doc, [
@@ -223,7 +250,16 @@ export async function generateInvoicePDF(data: InvoiceData) {
   }
 
   drawFooter(doc, "ACCOUNTS ARE DUE ON DEMAND  ·  E.&O.E");
-  doc.save(`Invoice-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`);
+  doc.save(`${filePrefix}-${data.doc_no || data.job_no || data.plate || "GAS"}.pdf`);
+}
+
+// ----- INVOICE -----
+export async function generateInvoicePDF(data: InvoiceData) {
+  await generateInvoiceLikePDF("INVOICE", "Invoice", data);
+}
+
+export async function generateDepositInvoicePDF(data: InvoiceData) {
+  await generateInvoiceLikePDF("DEPOSIT INVOICE", "Deposit-Invoice", data);
 }
 
 // ----- QUOTATION -----
@@ -245,8 +281,10 @@ export async function generateQuotationPDF(data: InvoiceData & { valid_until?: s
   ], 8 + half + 4, headerY, half);
 
   const sub = data.lines.reduce((s, l) => s + (l.qty || 0) * (l.unit_price || 0), 0);
-  const vat = data.vat ? sub * 0.16 : 0;
-  const total = sub + vat;
+  const discount = Number(data.discount ?? 0);
+  const vatBase = Math.max(0, sub - discount);
+  const vat = data.vat ? vatBase * 0.16 : 0;
+  const total = vatBase + vat;
 
   autoTable(doc, {
     startY: headerY + 24,
@@ -274,11 +312,10 @@ export async function generateQuotationPDF(data: InvoiceData & { valid_until?: s
   const finalY = (doc as any).lastAutoTable.finalY + 4;
   const boxW = 70;
   const boxX = w - 8 - boxW;
-  const rows: Array<[string, string]> = [
-    ["SUB TOTAL", fmtKsh(sub)],
-    ["VAT 16%", fmtKsh(vat)],
-    ["TOTAL", fmtKsh(total)],
-  ];
+  const rows: Array<[string, string]> = [["SUB TOTAL", fmtKsh(sub)]];
+  if (discount) rows.push(["DISCOUNT", `- ${fmtKsh(discount)}`]);
+  rows.push(["VAT 16%", fmtKsh(vat)]);
+  rows.push(["TOTAL", fmtKsh(total)]);
   rows.forEach(([k, v], i) => {
     const y = finalY + 2 + i * 5.5;
     const isTotal = k === "TOTAL";

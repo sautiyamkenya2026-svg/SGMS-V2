@@ -46,8 +46,8 @@ const AI_SETTING_DEFAULTS = {
   groq_api_key: "",
   ai_default_provider: "groq" as AIProvider,
   ai_chat_provider: "groq" as AIProvider,
-  ai_analysis_provider: "gemini" as AIProvider,
-  ai_image_provider: "gemini" as AIProvider,
+  ai_analysis_provider: "groq" as AIProvider,
+  ai_image_provider: "groq" as AIProvider,
 };
 
 const AI_PROVIDER_OPTIONS: Array<{ value: AIProvider; label: string }> = [
@@ -83,7 +83,7 @@ export default function Users() {
   const [savingAiSettings, setSavingAiSettings] = useState(false);
   const [aiKeys, setAiKeys] = useState<AIKey[]>([]);
   const [keyForm, setKeyForm] = useState<{ provider: AIProvider; label: string; api_key: string }>({
-    provider: "gemini",
+    provider: "groq",
     label: "",
     api_key: "",
   });
@@ -168,7 +168,7 @@ export default function Users() {
   // only super_admins can create director/admin/super_admin accounts.
   const allRoles: Role[] = isSuper
     ? ["reception", "mechanic", "storekeeper", "gateman", "manager", "director", "admin", "super_admin"]
-    : ["reception", "mechanic", "storekeeper", "gateman", "manager"];
+    : ["reception", "mechanic", "storekeeper", "gateman", "manager", "admin"];
 
   // Filter visible users: hide super_admins from normal admins
   const visible = profiles.filter(p => {
@@ -382,7 +382,7 @@ export default function Users() {
             User Management
             {isSuper && <Badge className="bg-amber-500 text-amber-950"><ShieldCheck className="h-3 w-3 mr-1" />Super Admin</Badge>}
           </h1>
-          <p className="text-sm text-muted-foreground">Add staff and assign roles. {isSuper ? "You can create other super admins and admins." : "Admins can create reception, mechanic, storekeeper, and gateman accounts."}</p>
+          <p className="text-sm text-muted-foreground">Add staff and assign roles. {isSuper ? "You can create every role, including other super admins." : "Admins can create staff and other admin accounts."}</p>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) resetForm(); }}>
           <DialogTrigger asChild><Button className="bg-gradient-primary"><Plus className="h-4 w-4 mr-2" />Add user</Button></DialogTrigger>

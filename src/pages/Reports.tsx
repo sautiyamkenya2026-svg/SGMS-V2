@@ -61,19 +61,23 @@ export default function Reports() {
 
 function FinancialTab() {
   const [loading, setLoading] = useState(true);
-  const [invoices, setInvoices] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [documents, setDocuments] = useState<any[]>([]);
   const [movements, setMovements] = useState<any[]>([]);
   const [petty, setPetty] = useState<any[]>([]);
 
   useEffect(() => {
     (async () => {
-      const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-      const [{ data: inv }, { data: mv }, { data: pc }] = await Promise.all([
-        supabase.from("invoices").select("date, amount, discount, amount_paid, doc_type").eq("doc_type", "invoice").gte("date", since),
-        supabase.from("stock_movements").select("created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", since).eq("type", "sale"),
-        supabase.from("petty_cash_entries").select("date, amount, transaction_cost, type").gte("date", since),
+      const sinceIso = new Date(Date.now() - 21 * 24 * 3600 * 1000).toISOString();
+      const sinceDay = sinceIso.slice(0, 10);
+      const [{ data: jobRows }, { data: docRows }, { data: mv }, { data: pc }] = await Promise.all([
+        supabase.from("jobs").select("started_at, completed_at, invoice_amount, receipt_amount, deposit_paid").gte("started_at", sinceIso),
+        supabase.from("invoices").select("doc_type, amount, amount_paid, date, updated_at").gte("date", sinceDay),
+        supabase.from("stock_movements").select("created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", sinceIso).eq("type", "sale"),
+        supabase.from("petty_cash_entries").select("date, amount, transaction_cost, type").gte("date", sinceDay),
       ]);
-      setInvoices(inv ?? []);
+      setJobs(jobRows ?? []);
+      setDocuments(docRows ?? []);
       setMovements(mv ?? []);
       setPetty(pc ?? []);
       setLoading(false);
@@ -81,31 +85,38 @@ function FinancialTab() {
   }, []);
 
   const { chart, totals } = useMemo(() => {
-    const map = new Map<string, { day: string; parts: number; labor: number; revenue: number }>();
+    const map = new Map<string, { day: string; parts: number; billed: number; collected: number }>();
     const days: string[] = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(Date.now() - i * 24 * 3600 * 1000).toISOString().slice(0, 10);
       days.push(d);
-      map.set(d, { day: d.slice(5), parts: 0, labor: 0, revenue: 0 });
+      map.set(d, { day: d.slice(5), parts: 0, billed: 0, collected: 0 });
     }
-    let partsRevenue = 0, partsCost = 0, labor = 0, pettyOut = 0;
+    let partsRevenue = 0, partsCost = 0, billed = 0, collected = 0, pettyOut = 0;
     for (const m of movements) {
       const d = dayKey(m.created_at);
       const row = map.get(d); if (!row) continue;
       const sell = Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0);
       const cost = Number(m.buy_price ?? 0) * Number(m.qty ?? 0);
       row.parts += sell;
-      row.revenue += sell;
       partsRevenue += sell;
       partsCost += cost;
     }
-    for (const inv of invoices) {
-      const d = inv.date as string;
+    for (const job of jobs) {
+      const d = dayKey(job.completed_at ?? job.started_at);
       const row = map.get(d); if (!row) continue;
-      const lab = netInvoiceAmount(inv);
-      row.labor += lab;
-      row.revenue += lab;
-      labor += lab;
+      const amount = Math.max(0, Number(job.invoice_amount || 0));
+      row.billed += amount;
+      billed += amount;
+    }
+    for (const doc of documents) {
+      const d = dayKey(doc.updated_at ?? doc.date);
+      const row = map.get(d); if (!row) continue;
+      const received = doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice"
+        ? Number(doc.amount_paid || 0)
+        : 0;
+      row.collected += received;
+      collected += received;
     }
     for (const p of petty) {
       if (p.type === "payment") pettyOut += Number(p.amount ?? 0) + Number(p.transaction_cost ?? 0);
@@ -113,9 +124,9 @@ function FinancialTab() {
     const chart = days.map(d => map.get(d)!);
     return {
       chart,
-      totals: { revenue: partsRevenue + labor, partsRevenue, partsCost, labor, pettyOut },
+      totals: { billed, collected, partsRevenue, partsCost, pettyOut },
     };
-  }, [invoices, movements, petty]);
+  }, [jobs, documents, movements, petty]);
 
   if (loading) return <p className="text-center text-muted-foreground py-8">Loading financials…</p>;
 
@@ -123,13 +134,13 @@ function FinancialTab() {
     <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-4">
         <Card className="stat-card">
-          <p className="text-xs text-muted-foreground">Revenue (7d)</p>
-          <p className="text-3xl font-bold mt-1">{fmt(totals.revenue)}</p>
+          <p className="text-xs text-muted-foreground">Billed work (7d)</p>
+          <p className="text-3xl font-bold mt-1">{fmt(totals.billed)}</p>
           <p className="text-xs text-success mt-1 flex items-center gap-1"><TrendingUp className="h-3 w-3" />Live</p>
         </Card>
         <Card className="stat-card">
-          <p className="text-xs text-muted-foreground">Labor / invoiced</p>
-          <p className="text-3xl font-bold mt-1">{fmt(totals.labor)}</p>
+          <p className="text-xs text-muted-foreground">Payments recorded</p>
+          <p className="text-3xl font-bold mt-1">{fmt(totals.collected)}</p>
         </Card>
         <Card className="stat-card">
           <p className="text-xs text-muted-foreground">Parts margin</p>
@@ -152,8 +163,9 @@ function FinancialTab() {
               <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
               <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8 }} />
               <Legend />
-              <Bar dataKey="parts" stackId="a" fill="hsl(var(--primary))" />
-              <Bar dataKey="labor" stackId="a" fill="hsl(var(--accent))" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="parts" fill="hsl(var(--primary))" />
+              <Bar dataKey="billed" fill="hsl(var(--accent))" />
+              <Bar dataKey="collected" fill="hsl(var(--success))" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -298,11 +310,12 @@ function PartsTab() {
 
 function CustomersTab() {
   const [rows, setRows] = useState<any[]>([]);
+  const [leadRows, setLeadRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     (async () => {
       const { data: jobs } = await supabase.from("jobs")
-        .select("plate, customer_name, customer_phone, completed_at, created_at")
+        .select("plate, customer_name, customer_phone, completed_at, created_at, lead_source, lead_source_detail")
         .order("created_at", { ascending: false })
         .limit(500);
       const seen = new Set<string>();
@@ -316,12 +329,51 @@ function CustomersTab() {
         if (days >= 80) out.push({ ...j, days });
       }
       setRows(out.slice(0, 15));
+      setLeadRows((jobs ?? []).slice(0, 30));
       setLoading(false);
     })();
   }, []);
   if (loading) return <p className="text-center text-muted-foreground py-8">Loading…</p>;
   return (
-    <Card className="p-5">
+    <div className="space-y-4">
+      <Card className="p-5">
+        <h3 className="font-semibold mb-4">How clients came to us</h3>
+        <div className="grid gap-3 md:grid-cols-3">
+          {Object.entries(leadRows.reduce((acc: Record<string, number>, row: any) => {
+            const key = row.lead_source ?? "unknown";
+            acc[key] = (acc[key] ?? 0) + 1;
+            return acc;
+          }, {})).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No lead-source data yet.</p>
+          ) : (
+            Object.entries(leadRows.reduce((acc: Record<string, number>, row: any) => {
+              const key = row.lead_source ?? "unknown";
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            }, {})).map(([source, count]) => (
+              <div key={source} className="rounded-md bg-muted/40 p-3">
+                <p className="text-xs uppercase text-muted-foreground">{source.replaceAll("_", " ")}</p>
+                <p className="mt-1 text-2xl font-bold">{count}</p>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <h3 className="font-semibold mb-4">Recent customer sources</h3>
+        {leadRows.length === 0 ? <p className="text-sm text-muted-foreground">No recent leads yet.</p>
+          : <div className="space-y-2">
+            {leadRows.slice(0, 12).map(lead => (
+              <div key={`${lead.plate}-${lead.created_at}`} className="flex justify-between items-center bg-muted/40 rounded-md p-3 text-sm">
+                <span>{lead.plate} Â· {lead.customer_name ?? "â€”"} {lead.customer_phone ? `Â· ${lead.customer_phone}` : ""}</span>
+                <Badge variant="secondary">{(lead.lead_source ?? "unknown").replaceAll("_", " ")}</Badge>
+              </div>
+            ))}
+          </div>}
+      </Card>
+
+      <Card className="p-5">
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-semibold">Vehicles due for service (last visit &gt; 80 days)</h3>
         <Button size="sm" variant="outline" disabled title="SMS gateway not yet configured"><Send className="h-4 w-4 mr-2" />Send SMS reminders</Button>
@@ -335,7 +387,8 @@ function CustomersTab() {
             </div>
           ))}
         </div>}
-    </Card>
+      </Card>
+    </div>
   );
 }
 
@@ -415,7 +468,7 @@ function Job360() {
       supabase.from("jobs").select("id, job_no, complaint, completed_at, created_at, status").eq("plate", job.plate).neq("id", job.id).order("created_at", { ascending: false }),
       supabase.from("stock_movements").select("*, parts(name, sku)").eq("job_id", job.id),
       supabase.from("petty_cash_entries").select("*").eq("job_id", job.id),
-      supabase.from("invoices").select("*").eq("job_id", job.id).eq("doc_type", "invoice"),
+      supabase.from("invoices").select("*").eq("job_id", job.id),
       supabase.from("tool_assignments").select("*, tools(name, code), mechanics(name)").eq("job_id", job.id),
       supabase.from("inspections").select("id, manual_done, obd_done, status, created_at").eq("job_id", job.id),
       supabase.from("gate_passes").select("*").eq("job_id", job.id),
@@ -475,9 +528,9 @@ function JobReport({ report }: { report: JobLookup }) {
   const partsCost = parts.reduce((s, m) => s + (Number(m.buy_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const partsRevenue = parts.reduce((s, m) => s + (Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const pettyTotal = petty.reduce((s, e) => s + Number(e.amount ?? 0), 0);
-  const invoiced = invoices.reduce((s, i) => s + netInvoiceAmount(i), 0);
-  const paid = invoices.reduce((s, i) => s + Number(i.amount_paid ?? 0), 0);
-  const jobTotal = invoiced || Number(job.invoice_amount || job.quotation_amount || job.estimate || 0);
+  const invoiced = Number(job.invoice_amount || invoices.reduce((s, i) => s + netInvoiceAmount(i), 0));
+  const paid = Number(job.receipt_amount || invoices.reduce((s, i) => s + Number(i.amount_paid ?? 0), 0));
+  const jobTotal = Number(job.invoice_amount || job.quotation_amount || job.estimate || 0);
   const profit = jobTotal - partsCost - pettyTotal;
   const mechanicLabel = jobMechanics.length > 0
     ? jobMechanics.map((assignment: any) => assignment.name).filter(Boolean).join(", ")

@@ -8,6 +8,8 @@
 
 @layer base {
   :root {
+    --safe-area-top: env(safe-area-inset-top, 0px);
+    --safe-area-bottom: env(safe-area-inset-bottom, 0px);
     --background: 36 35% 96%;
     --foreground: 28 40% 12%;
 
@@ -110,6 +112,7 @@
     @apply bg-background text-foreground;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
     font-feature-settings: "cv11", "ss01";
+    min-height: 100dvh;
   }
   h1, h2, h3 { font-family: 'Playfair Display', Georgia, serif; }
 }

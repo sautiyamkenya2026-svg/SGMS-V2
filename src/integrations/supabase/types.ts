@@ -446,11 +446,18 @@ export type Database = {
           discount_by: string | null
           doc_type: string
           id: string
+          is_payment_bypassed: boolean
           invoice_book_no: string | null
           invoice_no: string | null
           job_id: string | null
           notes: string | null
           parts_source: string | null
+          payer_name: string | null
+          payer_type: string
+          payment_bypass_authorized_by: string | null
+          payment_bypass_reason: string | null
+          payment_mode: string
+          payment_reference: string | null
           plate: string | null
           service_type: string | null
           status: string
@@ -471,11 +478,18 @@ export type Database = {
           discount_by?: string | null
           doc_type?: string
           id?: string
+          is_payment_bypassed?: boolean
           invoice_book_no?: string | null
           invoice_no?: string | null
           job_id?: string | null
           notes?: string | null
           parts_source?: string | null
+          payer_name?: string | null
+          payer_type?: string
+          payment_bypass_authorized_by?: string | null
+          payment_bypass_reason?: string | null
+          payment_mode?: string
+          payment_reference?: string | null
           plate?: string | null
           service_type?: string | null
           status?: string
@@ -496,11 +510,18 @@ export type Database = {
           discount_by?: string | null
           doc_type?: string
           id?: string
+          is_payment_bypassed?: boolean
           invoice_book_no?: string | null
           invoice_no?: string | null
           job_id?: string | null
           notes?: string | null
           parts_source?: string | null
+          payer_name?: string | null
+          payer_type?: string
+          payment_bypass_authorized_by?: string | null
+          payment_bypass_reason?: string | null
+          payment_mode?: string
+          payment_reference?: string | null
           plate?: string | null
           service_type?: string | null
           status?: string
@@ -624,6 +645,8 @@ export type Database = {
           diagnosis_approval_rating: number | null
           diagnosis_approved_at: string | null
           diagnosis_sent_at: string | null
+          deposit_paid: number
+          deposit_required: number
           discount_amount: number
           discount_reason: string | null
           estimate: number
@@ -636,10 +659,17 @@ export type Database = {
           insurance_policy_no: string | null
           invoice_amount: number
           job_no: string
+          lead_source: string | null
+          lead_source_detail: string | null
           mechanic: string | null
           notes: string | null
           paid_at: string | null
           paint_color_code: string | null
+          payer_name: string | null
+          payer_type: string
+          payment_bypass: boolean
+          payment_bypass_authorized_by: string | null
+          payment_bypass_reason: string | null
           parts_fit_approved_at: string | null
           parts_fit_approved_by: string | null
           plate: string
@@ -677,6 +707,8 @@ export type Database = {
           diagnosis_approval_rating?: number | null
           diagnosis_approved_at?: string | null
           diagnosis_sent_at?: string | null
+          deposit_paid?: number
+          deposit_required?: number
           discount_amount?: number
           discount_reason?: string | null
           estimate?: number
@@ -689,10 +721,17 @@ export type Database = {
           insurance_policy_no?: string | null
           invoice_amount?: number
           job_no?: string
+          lead_source?: string | null
+          lead_source_detail?: string | null
           mechanic?: string | null
           notes?: string | null
           paid_at?: string | null
           paint_color_code?: string | null
+          payer_name?: string | null
+          payer_type?: string
+          payment_bypass?: boolean
+          payment_bypass_authorized_by?: string | null
+          payment_bypass_reason?: string | null
           parts_fit_approved_at?: string | null
           parts_fit_approved_by?: string | null
           plate: string
@@ -730,6 +769,8 @@ export type Database = {
           diagnosis_approval_rating?: number | null
           diagnosis_approved_at?: string | null
           diagnosis_sent_at?: string | null
+          deposit_paid?: number
+          deposit_required?: number
           discount_amount?: number
           discount_reason?: string | null
           estimate?: number
@@ -742,10 +783,17 @@ export type Database = {
           insurance_policy_no?: string | null
           invoice_amount?: number
           job_no?: string
+          lead_source?: string | null
+          lead_source_detail?: string | null
           mechanic?: string | null
           notes?: string | null
           paid_at?: string | null
           paint_color_code?: string | null
+          payer_name?: string | null
+          payer_type?: string
+          payment_bypass?: boolean
+          payment_bypass_authorized_by?: string | null
+          payment_bypass_reason?: string | null
           parts_fit_approved_at?: string | null
           parts_fit_approved_by?: string | null
           plate?: string
@@ -1592,6 +1640,74 @@ export type Database = {
           notes?: string | null
           photo_url?: string | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      job_card_photos: {
+        Row: {
+          created_at: string
+          id: string
+          is_private: boolean
+          job_id: string
+          kind: string
+          storage_path: string
+          uploaded_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_private?: boolean
+          job_id: string
+          kind: string
+          storage_path: string
+          uploaded_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_private?: boolean
+          job_id?: string
+          kind?: string
+          storage_path?: string
+          uploaded_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "job_card_photos_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tronix_memories: {
+        Row: {
+          created_at: string
+          id: string
+          memory_key: string
+          memory_value: string
+          source: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          memory_key: string
+          memory_value: string
+          source?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          memory_key?: string
+          memory_value?: string
+          source?: string
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }

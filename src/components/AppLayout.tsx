@@ -68,11 +68,17 @@ export function AppLayout({ children }: { children?: ReactNode }) {
 
   return (
     <SidebarProvider>
-      <div className="flex min-h-screen w-full bg-background">
+      <div
+        className="flex min-h-screen w-full bg-background"
+        style={{
+          paddingTop: "var(--safe-area-top)",
+          paddingBottom: "var(--safe-area-bottom)",
+        }}
+      >
         <AppSidebar />
         <div className="flex flex-1 flex-col">
           <SchemaHealthBanner />
-          <header className="flex h-14 items-center gap-2 border-b bg-card px-4 shadow-sm">
+          <header className="flex min-h-14 items-center gap-2 border-b bg-card px-4 shadow-sm">
             <SidebarTrigger />
             {canGoBack && (
               <Button
@@ -172,7 +178,7 @@ export function AppLayout({ children }: { children?: ReactNode }) {
               </DropdownMenu>
             </div>
           </header>
-          <main className="flex-1 overflow-auto p-6 animate-fade-in">
+          <main className="flex-1 overflow-auto p-4 animate-fade-in sm:p-6">
             {children ?? <Outlet />}
           </main>
         </div>

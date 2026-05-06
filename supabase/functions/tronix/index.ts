@@ -70,6 +70,11 @@ interface UserCtx {
   roles: string[];
 }
 
+type TronixMemory = {
+  memory_key: string;
+  memory_value: string;
+};
+
 async function getUser(req: Request): Promise<UserCtx | null> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -295,8 +300,8 @@ async function toolPerformAction(args: any, user: UserCtx) {
       if (!email || !role) return { error: "email and role required" };
       if (!ROLES.includes(role)) return { error: `bad role. one of ${ROLES.join(", ")}` };
       const isSuper = user.roles.includes("super_admin");
-      if ((role === "super_admin" || role === "admin" || role === "director") && !isSuper) {
-        return { error: "only super_admin can create admin/director/super_admin users" };
+      if ((role === "super_admin" || role === "director") && !isSuper) {
+        return { error: "only super_admin can create this role" };
       }
       // generate a default password if missing
       const password = payload?.password && String(payload.password).length >= 6
@@ -372,28 +377,90 @@ function pickTaskType(messages: any[]): AITaskType {
   return hasImage ? "image" : "fast_chat";
 }
 
+function normaliseMemoryValue(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[.,!?;:]+$/g, "")
+    .trim();
+}
+
+function titleCase(value: string) {
+  return value.replace(/\b\w/g, (part) => part.toUpperCase());
+}
+
+function extractUserMemories(text: string): TronixMemory[] {
+  const cleaned = normaliseMemoryValue(text);
+  if (!cleaned) return [];
+
+  const memories: TronixMemory[] = [];
+  const nameMatch = cleaned.match(/\b(?:my name is|call me|i am|i'm)\s+([a-z][a-z\s'-]{1,40})/i);
+  if (nameMatch?.[1]) {
+    memories.push({
+      memory_key: "name",
+      memory_value: titleCase(normaliseMemoryValue(nameMatch[1])),
+    });
+  }
+
+  const homeMatch = cleaned.match(/\bfrom\s+([a-z][a-z\s'-]{1,50})/i);
+  if (homeMatch?.[1]) {
+    memories.push({
+      memory_key: "home",
+      memory_value: titleCase(normaliseMemoryValue(homeMatch[1])),
+    });
+  }
+
+  return memories;
+}
+
+async function saveUserMemories(sb: ReturnType<typeof adminClient>, userId: string, text: string) {
+  const memories = extractUserMemories(text);
+  if (memories.length === 0) return;
+
+  await sb.from("tronix_memories").upsert(
+    memories.map((memory) => ({
+      user_id: userId,
+      ...memory,
+      source: "chat",
+    })),
+    { onConflict: "user_id,memory_key" },
+  );
+}
+
 async function callAI(
   chatMessages: any[],
   user: UserCtx,
 ): Promise<{ reply: string; provider: AIProviderName; modeLabel: string }> {
-  // Pull the last ~30 stored messages so Tronix has long-term memory
+  // Pull stored messages + explicit memories so Tronix has long-term memory
   // across sessions, not just the current browser tab.
   const sb = adminClient();
-  const { data: history } = await sb
-    .from("tronix_messages")
-    .select("role, content")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false })
-    .limit(30);
+  const [{ data: history }, { data: savedMemories }] = await Promise.all([
+    sb
+      .from("tronix_messages")
+      .select("role, content")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(120),
+    sb
+      .from("tronix_memories")
+      .select("memory_key, memory_value")
+      .eq("user_id", user.id)
+      .order("updated_at", { ascending: false }),
+  ]);
   const memoryMessages = (history ?? [])
     .reverse()
     .map((m: any) => ({ role: m.role, content: m.content }));
+  const memoryBlock = (savedMemories ?? []).length
+    ? (savedMemories ?? [])
+        .map((memory) => `- ${memory.memory_key}: ${memory.memory_value}`)
+        .join("\n")
+    : "- none saved yet";
 
   const messages: any[] = [
     {
       role: "system",
       content:
         SYSTEM_PROMPT + MEMORY_RULES +
+        `\n\nSaved memory for this user:\n${memoryBlock}` +
         `\n\nCurrent user: **${user.displayName}** (first name: ${user.firstName}, email: ${user.email}, roles: [${user.roles.join(", ") || "none"}]).`,
     },
     ...memoryMessages,
@@ -449,12 +516,17 @@ Deno.serve(async (req) => {
         status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-    const { messages, image } = await req.json();
+    const { messages, image, images } = await req.json();
     if (!Array.isArray(messages)) {
       return new Response(JSON.stringify({ error: "messages must be an array" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+    const imageList = Array.isArray(images)
+      ? images.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(0, 6)
+      : typeof image === "string" && image.trim().length > 0
+        ? [image]
+        : [];
 
     // Map to OpenAI-compatible chat format
     const chatMessages: any[] = messages.map((m: any) => ({
@@ -462,12 +534,12 @@ Deno.serve(async (req) => {
       content: m.content,
     }));
 
-    // Attach image to the LAST user message if present (OpenAI vision format)
-    if (image && chatMessages.length > 0) {
+    // Attach image(s) to the LAST user message if present (OpenAI vision format)
+    if (imageList.length > 0 && chatMessages.length > 0) {
       const last = chatMessages[chatMessages.length - 1];
       last.content = [
-        { type: "text", text: typeof last.content === "string" ? last.content : "(see image)" },
-        { type: "image_url", image_url: { url: image } },
+        { type: "text", text: typeof last.content === "string" ? last.content : "(see attached images)" },
+        ...imageList.map((url) => ({ type: "image_url", image_url: { url } })),
       ];
     }
 
@@ -483,8 +555,9 @@ Deno.serve(async (req) => {
           ? (lastUser.content.find((p: any) => p.type === "text")?.text ?? "(image)")
           : "";
       if (userText) {
+        await saveUserMemories(sb, user.id, userText);
         await sb.from("tronix_messages").insert([
-          { user_id: user.id, role: "user", content: userText, has_image: !!image },
+          { user_id: user.id, role: "user", content: userText, has_image: imageList.length > 0 },
           { user_id: user.id, role: "assistant", content: reply },
         ]);
       }

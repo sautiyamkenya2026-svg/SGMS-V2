@@ -1,147 +1,296 @@
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import { Send, X, Sparkles, Loader2 } from "lucide-react";
+import { Send, X, Sparkles, Loader2, Images } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { CameraInput } from "@/components/CameraInput";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 
-type Msg = { role: "user" | "assistant"; content: string; image?: string; meta?: string };
+type Msg = {
+  role: "user" | "assistant";
+  content: string;
+  images?: string[];
+  createdAt?: string;
+};
 
 interface Props {
   fullPage?: boolean;
   className?: string;
 }
 
+const MAX_IMAGE_SIZE = 4 * 1024 * 1024;
+const MAX_IMAGE_COUNT = 6;
+
+const WELCOME_MESSAGE: Msg = {
+  role: "assistant",
+  content: "Hi, I'm **Tronix**. Ask me about jobs, stock, invoices, or send a few photos and I'll help you diagnose them.",
+};
+
+const readAsDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
 export function TronixChat({ fullPage = false, className }: Props) {
   const { toast } = useToast();
-  const [messages, setMessages] = useState<Msg[]>([
-    {
-      role: "assistant",
-      content: "Hi, I'm **Tronix** ⚡ — your Golden Automotive Solutions AI. Ask me about jobs, stock, invoices, or upload a photo of a part / dashboard light and I'll diagnose it.",
-    },
-  ]);
-  const [input, setInput] = useState("");
-  const [image, setImage] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [messages, setMessages] = useState<Msg[]>([WELCOME_MESSAGE]);
+  const [input, setInput] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
-  const onPickImage = (file: File, dataUrl: string) => {
-    if (file.size > 4 * 1024 * 1024) {
+  useEffect(() => {
+    let alive = true;
+
+    const loadHistory = async () => {
+      const { data, error } = await supabase
+        .from("tronix_messages")
+        .select("role, content, created_at")
+        .order("created_at", { ascending: true })
+        .limit(120);
+
+      if (!alive) return;
+      if (error) {
+        setHistoryLoading(false);
+        return;
+      }
+
+      const history = (data ?? [])
+        .filter((row: any) => row.role === "user" || row.role === "assistant")
+        .map((row: any) => ({
+          role: row.role as "user" | "assistant",
+          content: row.content,
+          createdAt: row.created_at,
+        }));
+
+      setMessages(history.length > 0 ? history : [WELCOME_MESSAGE]);
+      setHistoryLoading(false);
+    };
+
+    loadHistory();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const appendFiles = async (fileList: FileList | File[]) => {
+    const incoming = Array.from(fileList);
+    if (incoming.length === 0) return;
+
+    const remainingSlots = MAX_IMAGE_COUNT - images.length;
+    if (remainingSlots <= 0) {
+      toast({
+        title: "Image limit reached",
+        description: `You can attach up to ${MAX_IMAGE_COUNT} images at once.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const nextFiles = incoming.slice(0, remainingSlots);
+    const tooLarge = nextFiles.find((file) => file.size > MAX_IMAGE_SIZE);
+    if (tooLarge) {
+      toast({
+        title: "Image too large",
+        description: `${tooLarge.name} is above 4MB.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const nextImages = await Promise.all(nextFiles.map((file) => readAsDataUrl(file)));
+    setImages((prev) => [...prev, ...nextImages].slice(0, MAX_IMAGE_COUNT));
+  };
+
+  const onPickCameraImage = async (file: File) => {
+    if (file.size > MAX_IMAGE_SIZE) {
       toast({ title: "Image too large", description: "Max 4MB.", variant: "destructive" });
       return;
     }
-    setImage(dataUrl);
+    const dataUrl = await readAsDataUrl(file);
+    setImages((prev) => [...prev, dataUrl].slice(0, MAX_IMAGE_COUNT));
+  };
+
+  const removeImage = (index: number) => {
+    setImages((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
   };
 
   const send = async () => {
-    if (!input.trim() && !image) return;
-    const userMsg: Msg = { role: "user", content: input.trim() || "(see attached image)", image: image ?? undefined };
-    const next = [...messages, userMsg];
-    setMessages(next);
+    if (!input.trim() && images.length === 0) return;
+
+    const userText = input.trim() || (images.length === 1 ? "(see attached image)" : "(see attached images)");
+    const sentImages = [...images];
+    const userMsg: Msg = {
+      role: "user",
+      content: userText,
+      images: sentImages.length > 0 ? sentImages : undefined,
+    };
+
+    setMessages((prev) => [...prev, userMsg]);
     setInput("");
-    const sentImage = image;
-    setImage(null);
+    setImages([]);
     setLoading(true);
+
     try {
       const { data, error, response } = await supabase.functions.invoke("tronix", {
         body: {
-          messages: next.map(({ role, content }) => ({ role, content })),
-          image: sentImage,
+          messages: [{ role: "user", content: userText }],
+          images: sentImages,
         },
       });
       if (error) {
         throw new Error(await readEdgeFunctionErrorMessage(error, response, "Tronix request failed."));
       }
       if (data?.error) throw new Error(data.error);
-      setMessages((m) => [
-        ...m,
+
+      setMessages((prev) => [
+        ...prev,
         {
           role: "assistant",
           content: data.reply ?? "(no reply)",
-          meta: typeof data.mode === "string" ? `Tronix (${data.mode})` : undefined,
         },
       ]);
     } catch (e: any) {
       toast({ title: "Tronix error", description: e.message ?? String(e), variant: "destructive" });
-      setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${e.message ?? "Something went wrong."}` }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: `I hit a snag: ${e.message ?? "Something went wrong."}` }]);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Card className={cn("flex flex-col bg-card", fullPage ? "h-[calc(100vh-8rem)]" : "h-[560px]", className)}>
+    <Card
+      className={cn("flex flex-col bg-card", fullPage ? "min-h-[560px]" : "h-[560px]", className)}
+      style={fullPage ? { height: "calc(100dvh - var(--safe-area-top, 0px) - 10rem)" } : undefined}
+    >
       <div className="flex items-center gap-2 border-b px-4 py-3">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-primary to-accent">
           <Sparkles className="h-4 w-4 text-primary-foreground" />
         </div>
         <div>
           <p className="text-sm font-bold">Tronix</p>
-          <p className="text-[11px] text-muted-foreground">Golden Automotive Solutions AI</p>
+          <p className="text-[11px] text-muted-foreground">Your garage AI chat history stays here.</p>
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.map((m, i) => (
-          <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4">
+        {historyLoading && (
+          <div className="flex justify-start">
+            <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm">
+              <Loader2 className="h-3 w-3 animate-spin" /> Loading previous chats...
+            </div>
+          </div>
+        )}
+
+        {!historyLoading && messages.map((message, index) => (
+          <div key={`${message.role}-${index}-${message.createdAt ?? "now"}`} className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
-                "max-w-[85%] rounded-lg px-3 py-2 text-sm",
-                m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted",
+                "max-w-[88%] rounded-lg px-3 py-2 text-sm",
+                message.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted",
               )}
             >
-              {m.image && <img src={m.image} alt="upload" className="mb-2 max-h-48 rounded" />}
-              {m.role === "assistant" ? (
-                <div className="prose prose-sm dark:prose-invert max-w-none [&>*]:my-1">
-                  {m.meta && <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{m.meta}</p>}
-                  <ReactMarkdown>{m.content}</ReactMarkdown>
+              {message.images && message.images.length > 0 && (
+                <div className="mb-2 grid grid-cols-2 gap-2">
+                  {message.images.map((image, imageIndex) => (
+                    <img key={`${index}-${imageIndex}`} src={image} alt="upload" className="max-h-32 rounded object-cover" />
+                  ))}
+                </div>
+              )}
+              {message.role === "assistant" ? (
+                <div className="prose prose-sm max-w-none [&>*]:my-1">
+                  <ReactMarkdown>{message.content}</ReactMarkdown>
                 </div>
               ) : (
-                <p className="whitespace-pre-wrap">{m.content}</p>
+                <p className="whitespace-pre-wrap">{message.content}</p>
               )}
             </div>
           </div>
         ))}
+
         {loading && (
           <div className="flex justify-start">
-            <div className="bg-muted rounded-lg px-3 py-2 text-sm flex items-center gap-2">
-              <Loader2 className="h-3 w-3 animate-spin" /> Thinking…
+            <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm">
+              <Loader2 className="h-3 w-3 animate-spin" /> Thinking...
             </div>
           </div>
         )}
       </div>
 
-      {image && (
-        <div className="border-t px-4 py-2 flex items-center gap-2">
-          <img src={image} alt="preview" className="h-12 w-12 rounded object-cover" />
-          <span className="text-xs text-muted-foreground flex-1">Image attached</span>
-          <Button size="icon" variant="ghost" onClick={() => setImage(null)}>
-            <X className="h-4 w-4" />
-          </Button>
+      {images.length > 0 && (
+        <div className="border-t px-4 py-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              {images.length} image{images.length === 1 ? "" : "s"} attached
+            </span>
+            <span className="text-[11px] text-muted-foreground">Up to {MAX_IMAGE_COUNT}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+            {images.map((image, index) => (
+              <div key={`${image.slice(0, 20)}-${index}`} className="relative overflow-hidden rounded-md border">
+                <img src={image} alt="preview" className="h-20 w-full object-cover" />
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="absolute right-1 top-1 h-6 w-6 bg-black/45 text-white hover:bg-black/60 hover:text-white"
+                  onClick={() => removeImage(index)}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      <div className="border-t p-3 flex items-center gap-2">
-        <CameraInput onPick={onPickImage} disabled={loading} />
-        <Input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), send())}
-          placeholder="Ask Tronix anything…"
-          disabled={loading}
-        />
-        <Button size="icon" onClick={send} disabled={loading || (!input.trim() && !image)}>
-          <Send className="h-4 w-4" />
-        </Button>
+      <div className="border-t p-3">
+        <div className="flex items-center gap-2">
+          <CameraInput onPick={onPickCameraImage} disabled={loading || images.length >= MAX_IMAGE_COUNT} />
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={async (event) => {
+              if (event.target.files) await appendFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            disabled={loading || images.length >= MAX_IMAGE_COUNT}
+            onClick={() => fileRef.current?.click()}
+            title="Choose several images"
+          >
+            <Images className="h-4 w-4" />
+          </Button>
+          <Input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => event.key === "Enter" && !event.shiftKey && (event.preventDefault(), send())}
+            placeholder="Ask Tronix anything..."
+            disabled={loading}
+          />
+          <Button size="icon" onClick={send} disabled={loading || (!input.trim() && images.length === 0)}>
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </Card>
   );

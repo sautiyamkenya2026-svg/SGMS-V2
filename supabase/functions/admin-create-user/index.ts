@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
     const { email, password, display_name, role } = body as { email?:string; password?:string; display_name?:string; role?:Role };
     if (!email || !password || !role) return json({ error: "email, password, role required" }, 400);
     if (!ROLES.includes(role)) return json({ error: "bad role" }, 400);
-    if ((role === "super_admin" || role === "admin" || role === "director") && !isSuper) return json({ error: "only super admin can create admins/directors" }, 403);
+    if ((role === "super_admin" || role === "director") && !isSuper) return json({ error: "only super admin can create this role" }, 403);
 
     // create the auth user (auto-confirmed so they can sign in immediately)
     const { data: created, error: ce } = await admin.auth.admin.createUser({
