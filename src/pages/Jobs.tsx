@@ -20,6 +20,7 @@ import { InspectionWizard } from "@/components/InspectionWizard";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
+import { friendlyErrorMessage } from "@/lib/app-error";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
@@ -70,6 +71,9 @@ const STATUS_ORDER: Record<JobStatus, number> = {
   completed: 7,
   closed: 8,
 };
+
+const isIssuedPartMovement = (movement: any) =>
+  ["sale", "transfer_out", "issue", "out"].includes(String(movement?.type ?? ""));
 
 interface Job {
   id: string;
@@ -1311,7 +1315,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     } else {
       setJobPhotos([]);
     }
-    setPartsUsed(m ?? []);
+    setPartsUsed((m ?? []).filter((row: any) => isIssuedPartMovement(row)));
     setPettyForJob(p ?? []);
     setInvoicesForJob(inv ?? []);
     setLineItems(li ?? []);
@@ -1517,7 +1521,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       job_id: jobId, kind: "part", item_name: item.name, qty: item.qty || 1,
       notes: item.reason ? `AI suggested · ${item.reason}` : "AI suggested", status: "pending",
     } as any);
-    if (error) { toast.error(error.message); return; }
+    if (error) { toast.error(friendlyErrorMessage(error, "Could not request that part.")); return; }
     list[idx] = { ...item, requested: true };
     await supabase.from("jobs").update({ recommended_parts: list as any }).eq("id", jobId);
     toast.success(`Requested: ${item.name}`);
@@ -1540,7 +1544,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       qty: 1, unit_price: 0,
     }).select().single();
     if (error) {
-      toast.error(error.message);
+      toast.error(friendlyErrorMessage(error, "Could not add the line item."));
     } else if (data) {
       const next = [...lineItems, data];
       setLineItems(next);
@@ -1552,7 +1556,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     setLineItems(next);
     const { error } = await supabase.from("job_line_items").update(patch).eq("id", id);
     if (error) {
-      toast.error(error.message);
+      toast.error(friendlyErrorMessage(error, "Could not update the line item."));
     } else {
       await persistFinancialSnapshot({ rows: next, silent: true });
     }
@@ -1561,10 +1565,12 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     const next = lineItems.filter((l) => l.id !== id);
     const { error } = await supabase.from("job_line_items").delete().eq("id", id);
     if (error) {
-      toast.error(error.message);
+      toast.error(friendlyErrorMessage(error, "Could not remove the line item."));
+      return false;
     } else {
       setLineItems(next);
       await persistFinancialSnapshot({ rows: next, silent: true });
+      return true;
     }
   };
   const pickPartForLine = async (id: string, partId: string) => {
@@ -1600,7 +1606,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
     const { data, error } = await supabase.from("job_line_items").insert(payload).select();
     if (error) {
-      toast.error(error.message);
+      toast.error(friendlyErrorMessage(error, "Could not add the service kit items."));
       return;
     }
 
@@ -1609,6 +1615,41 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     setServiceKitSelection([]);
     await persistFinancialSnapshot({ rows: next, silent: true });
     toast.success("Service kit items added");
+  };
+
+  const removeIssuedPart = async (movement: any) => {
+    const movementLabel = movement.parts?.name ?? "this issued part";
+    if (!window.confirm(`Remove ${movementLabel} from this job and return it to stock?`)) return;
+
+    try {
+      const reference = String(movement.reference ?? "");
+      const jobLineMatch = reference.match(/^job-line:(.+)$/i);
+      if (jobLineMatch?.[1]) {
+        const removed = await removeLine(jobLineMatch[1]);
+        if (removed) {
+          toast.success(`${movementLabel} removed and returned to stock`);
+          load();
+        }
+        return;
+      }
+
+      const partRequestMatch = reference.match(/^part_request:(.+)$/i);
+      if (partRequestMatch?.[1]) {
+        const { error: requestError } = await supabase
+          .from("part_requests")
+          .update({ status: "approved" })
+          .eq("id", partRequestMatch[1]);
+        if (requestError) throw requestError;
+      }
+
+      const { error } = await supabase.from("stock_movements").delete().eq("id", movement.id);
+      if (error) throw error;
+
+      toast.success(`${movementLabel} removed and returned to stock`);
+      load();
+    } catch (error) {
+      toast.error(friendlyErrorMessage(error, "Could not remove that issued part."));
+    }
   };
 
   const syncPartLineSales = async (jobSnapshot: Job, rows: any[]) => {
@@ -1896,7 +1937,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
     const { error } = await supabase.from("jobs").update(patch).eq("id", jobId);
     if (error) {
-      toast.error(error.message);
+      toast.error(friendlyErrorMessage(error, "Could not save the job changes."));
       return null;
     }
 
@@ -1906,7 +1947,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       await syncPartLineSales(snapshot, rows);
       await syncJobDocuments(snapshot, rows, subtotal, total, Math.max(0, Number(amountPaidValue || 0)));
     } catch (e: any) {
-      toast.error(e?.message ?? "Saved the job, but document sync failed");
+      toast.error(friendlyErrorMessage(e, "Saved the job, but document sync failed."));
     }
 
     if (!silent) toast.success("Saved");
@@ -2183,7 +2224,7 @@ Golden Automotive Solutions`);
       setStatusOverride(false);
       load();
     } catch (error: any) {
-      toast.error(error.message ?? "Could not change the job status");
+      toast.error(friendlyErrorMessage(error, "Could not change the job status."));
     } finally {
       setSavingStatus(false);
     }
@@ -2464,9 +2505,22 @@ Golden Automotive Solutions`);
               ) : (
                 <div className="space-y-2 text-sm">
                   {partsUsed.map((m, i) => (
-                    <div key={i} className="flex justify-between bg-muted/40 rounded p-2">
+                    <div key={m.id ?? i} className="flex items-center justify-between gap-3 rounded bg-muted/40 p-2">
                       <span>{m.parts?.name ?? "—"} ×{m.qty}</span>
-                      <span className="font-mono text-xs">{m.type}</span>
+                      <div className="flex items-center gap-1">
+                        <span className="font-mono text-xs">{m.type}</span>
+                        {canManageJob && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8"
+                            onClick={() => removeIssuedPart(m)}
+                            title="Remove issued part"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

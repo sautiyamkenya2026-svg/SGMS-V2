@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, ShieldCheck, Users, ClipboardList, DoorOpen, Fingerprint, Battery } from "lucide-react";
+import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, Users, ClipboardList, DoorOpen, Fingerprint, Battery } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter, useSidebar,
@@ -106,10 +106,7 @@ export function AppSidebar() {
       <SidebarFooter className="border-t border-sidebar-border p-3">
         {!collapsed && user && (
           <div className="mb-2 px-2">
-            <p className="text-xs font-semibold text-sidebar-foreground flex items-center gap-1">
-              {user.displayName}
-              {isSuper && <ShieldCheck className="h-3 w-3 text-amber-500" aria-label="Super admin" />}
-            </p>
+            <p className="text-xs font-semibold text-sidebar-foreground">{isSuper ? "Operator" : user.displayName}</p>
             <p className="text-[11px] text-sidebar-foreground/60 capitalize">
               {isSuper ? "operator" : (user.roles[0] ?? "user").replace("_"," ")}
             </p>

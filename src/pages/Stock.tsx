@@ -11,9 +11,10 @@ import {
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight, RefreshCw, Plus, Sparkles, Loader2 } from "lucide-react";
+import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight, RefreshCw, Plus, Sparkles, Loader2, Pencil } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth";
+import { friendlyErrorMessage } from "@/lib/app-error";
 import { canSeeCostPrices } from "@/lib/permissions";
 import { toast } from "@/hooks/use-toast";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
@@ -63,6 +64,7 @@ export default function Stock() {
 
   const [dialog, setDialog] = useState<null | { type: MovementType; part: Part }>(null);
   const [addPartOpen, setAddPartOpen] = useState(false);
+  const [editPart, setEditPart] = useState<Part | null>(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -247,6 +249,9 @@ export default function Stock() {
                     {canEdit && (
                       <td className="p-3 text-right">
                         <div className="flex justify-end gap-1">
+                          <Button variant="outline" size="sm" onClick={() => setEditPart(r)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
                           <Button variant="outline" size="sm" onClick={() => setDialog({ type: "restock", part: r })}>
                             <ArrowDownToLine className="h-3.5 w-3.5" />
                           </Button>
@@ -294,6 +299,15 @@ export default function Stock() {
           onDone={loadAll}
         />
       )}
+
+      {editPart && (
+        <EditPartDialog
+          open
+          part={editPart}
+          onClose={() => setEditPart(null)}
+          onDone={loadAll}
+        />
+      )}
     </div>
   );
 }
@@ -337,7 +351,7 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
       if (error || (data as any)?.error) {
         const message = (data as any)?.error
           ?? await readEdgeFunctionErrorMessage(error, response, "AI scan failed.");
-        toast({ title: "AI scan failed", description: message, variant: "destructive" });
+        toast({ title: "AI scan failed", description: friendlyErrorMessage(message, "AI scan failed."), variant: "destructive" });
         return;
       }
 
@@ -381,7 +395,7 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
       .single();
     if (error || !part) {
       setBusy(false);
-      toast({ title: "Failed", description: error?.message, variant: "destructive" });
+      toast({ title: "Failed", description: friendlyErrorMessage(error, "Could not add that part."), variant: "destructive" });
       return;
     }
     if (qty > 0 && locationId) {
@@ -401,7 +415,7 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
         setBusy(false);
         toast({
           title: "Part created but stock was not added",
-          description: movementError.message,
+          description: friendlyErrorMessage(movementError, "The part was created, but the opening stock could not be added."),
           variant: "destructive",
         });
         return;
@@ -496,6 +510,111 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
   );
 }
 
+function EditPartDialog({ open, part, onClose, onDone }: {
+  open: boolean;
+  part: Part;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [name, setName] = useState(part.name);
+  const [sku, setSku] = useState(part.sku);
+  const [category, setCategory] = useState(part.category ?? "");
+  const [unitCost, setUnitCost] = useState(String(part.unit_cost ?? 0));
+  const [unitPrice, setUnitPrice] = useState(String(part.unit_price ?? 0));
+  const [minStock, setMinStock] = useState(String(part.min_stock ?? 0));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setName(part.name);
+    setSku(part.sku);
+    setCategory(part.category ?? "");
+    setUnitCost(String(part.unit_cost ?? 0));
+    setUnitPrice(String(part.unit_price ?? 0));
+    setMinStock(String(part.min_stock ?? 0));
+  }, [part]);
+
+  const submit = async () => {
+    if (!name.trim() || !sku.trim()) {
+      toast({ title: "Name and SKU are required", variant: "destructive" });
+      return;
+    }
+
+    setBusy(true);
+    const { error } = await supabase
+      .from("parts")
+      .update({
+        name: name.trim(),
+        sku: sku.trim(),
+        category: category.trim() || null,
+        unit_cost: Number(unitCost || 0),
+        unit_price: Number(unitPrice || 0),
+        min_stock: Number(minStock || 0),
+      })
+      .eq("id", part.id);
+    setBusy(false);
+
+    if (error) {
+      toast({
+        title: "Update failed",
+        description: friendlyErrorMessage(error, "Could not update this part."),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({ title: "Part updated", description: `${name.trim()} was saved.` });
+    onDone();
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Edit part details</DialogTitle>
+          <DialogDescription>Correct a name, SKU, category, or price without creating a new stock row.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3 py-2">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Part name</Label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div>
+              <Label>SKU</Label>
+              <Input value={sku} onChange={(e) => setSku(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <Label>Category</Label>
+            <Input value={category} onChange={(e) => setCategory(e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Buy price</Label>
+              <Input type="number" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} />
+            </div>
+            <div>
+              <Label>Sell price</Label>
+              <Input type="number" value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <Label>Min stock alert</Label>
+            <Input type="number" value={minStock} onChange={(e) => setMinStock(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={submit} disabled={busy} className="bg-gradient-primary">
+            {busy ? "Saving..." : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function MovementDialog({
   open, onClose, type, part, fromLocation, locations, jobs, onDone,
 }: {
@@ -579,7 +698,7 @@ function MovementDialog({
 
     setBusy(false);
     if (error) {
-      toast({ title: "Failed", description: error, variant: "destructive" });
+      toast({ title: "Failed", description: friendlyErrorMessage(error, "Could not save that stock movement."), variant: "destructive" });
     } else {
       toast({ title: "Saved", description: `${titles[type]} recorded.` });
       onDone();

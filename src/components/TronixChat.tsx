@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { CameraInput } from "@/components/CameraInput";
+import { friendlyErrorMessage } from "@/lib/app-error";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 
@@ -222,8 +223,9 @@ export function TronixChat({ fullPage = false, className }: Props) {
         },
       ]);
     } catch (e: any) {
-      toast({ title: "Tronix error", description: e.message ?? String(e), variant: "destructive" });
-      setMessages((prev) => [...prev, { role: "assistant", content: `I hit a snag: ${e.message ?? "Something went wrong."}` }]);
+      const message = friendlyErrorMessage(e, "Something went wrong.");
+      toast({ title: "Tronix error", description: message, variant: "destructive" });
+      setMessages((prev) => [...prev, { role: "assistant", content: `I hit a snag: ${message}` }]);
     } finally {
       setLoading(false);
     }

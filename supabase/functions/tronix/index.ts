@@ -47,7 +47,7 @@ Garage operating context:
 - The system tracks Jobs, Inspections, Invoices, Quotations, Receipts, Stock, Suppliers, Petty Cash, Clients, Vehicles, Tools, Tool Assignments, and Gate Passes.
 - Job stages: diagnosis -> diagnosed -> parts -> repair -> approval -> completed -> closed.
 - Document flow: diagnosed/parts/approval -> quotation. repair/completed -> invoice. closed -> receipt + gate pass.
-- Roles: super_admin, admin, director, manager, reception, mechanic, storekeeper, gateman.
+- Roles exist for high-clearance operators, admins, directors, managers, reception, mechanics, storekeepers, and gate staff.
 - Available read_data tables: jobs, gate_passes, inspections, inspection_findings, obd_scans, obd_codes, invoices, invoice_items, parts, part_stock, stock_daily, stock_movements, locations, suppliers, supplier_ledger, petty_cash_entries, clients, vehicles, mechanics, tools, tool_assignments, tool_checkins.
 
 Tool behavior:
@@ -65,9 +65,7 @@ Memory and personalisation:
 - For diagnostics, look for relevant similar jobs or patterns in the stored garage data when useful.
 - Do not contradict earlier advice without explaining what changed.`;
 
-const GARAGE_QUERY_PATTERNS = [
-  /\bjob(?:\s*card)?\b/i,
-  /\bplate\b/i,
+const GARAGE_TOPIC_PATTERNS = [
   /\bvehicle\b/i,
   /\bcar\b/i,
   /\bgarage\b/i,
@@ -75,6 +73,21 @@ const GARAGE_QUERY_PATTERNS = [
   /\bmechanic\b/i,
   /\binspection\b/i,
   /\bdiagnos(?:e|is|ed|ing)\b/i,
+  /\brepair\b/i,
+  /\bservice\b/i,
+  /\bengine\b/i,
+  /\bbrake\b/i,
+  /\bsuspension\b/i,
+  /\bgearbox\b/i,
+  /\btyre\b/i,
+  /\bpaint\b/i,
+  /\bbody\s*work\b/i,
+];
+
+const SYSTEM_DATA_PATTERNS = [
+  /\bjob(?:\s*card)?\b/i,
+  /\bplate\b/i,
+  /\binspection\b/i,
   /\binvoice\b/i,
   /\bquotation\b/i,
   /\breceipt\b/i,
@@ -85,8 +98,6 @@ const GARAGE_QUERY_PATTERNS = [
   /\bpetty\s*cash\b/i,
   /\bclient\b/i,
   /\bcustomer\b/i,
-  /\bcheck[\s-]?in\b/i,
-  /\bservice\b/i,
   /\btool(?:s)?\b/i,
   /\bmpesa\b/i,
   /\bpayment\b/i,
@@ -94,6 +105,11 @@ const GARAGE_QUERY_PATTERNS = [
   /\bour\s+garage\b/i,
   /\bin\s+the\s+system\b/i,
   /\brecord\b/i,
+  /\bshow\b/i,
+  /\blist\b/i,
+  /\bfind\b/i,
+  /\blookup\b/i,
+  /\bcheck\b/i,
   /\bK[A-Z]{2}\s?\d{3}[A-Z]\b/,
 ];
 
@@ -115,10 +131,31 @@ function latestUserText(messages: any[]) {
   return "";
 }
 
-function isGarageQuery(text: string) {
+function messageHasImage(message: any) {
+  return Array.isArray(message?.content)
+    && message.content.some((part: any) => part?.type === "image_url" && part?.image_url?.url);
+}
+
+function latestUserHasImage(messages: any[]) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.role === "user") {
+      return messageHasImage(messages[index]);
+    }
+  }
+  return false;
+}
+
+function isGarageTopic(text: string) {
   const cleaned = text.trim();
   if (!cleaned) return false;
-  return GARAGE_QUERY_PATTERNS.some((pattern) => pattern.test(cleaned));
+  return GARAGE_TOPIC_PATTERNS.some((pattern) => pattern.test(cleaned))
+    || SYSTEM_DATA_PATTERNS.some((pattern) => pattern.test(cleaned));
+}
+
+function isSystemDataQuery(text: string) {
+  const cleaned = text.trim();
+  if (!cleaned) return false;
+  return SYSTEM_DATA_PATTERNS.some((pattern) => pattern.test(cleaned));
 }
 
 function buildFallbackReply(text: string, user: UserCtx, error: unknown) {
@@ -288,7 +325,7 @@ async function toolPerformAction(args: any, user: UserCtx) {
   if (!allowed) {
     return {
       forbidden: true,
-      message: `Your role(s) [${user.roles.join(", ") || "none"}] cannot perform "${action}". Required: ${required.join(" or ")}.`,
+      message: "You do not have sufficient clearance to perform that action.",
     };
   }
   const sb = adminClient();
@@ -431,7 +468,7 @@ async function toolPerformAction(args: any, user: UserCtx) {
       if (!ROLES.includes(role)) return { error: `bad role. one of ${ROLES.join(", ")}` };
       const isSuper = user.roles.includes("super_admin");
       if ((role === "super_admin" || role === "director") && !isSuper) {
-        return { error: "only super_admin can create this role" };
+        return { error: "You do not have sufficient clearance to create that account type." };
       }
       // generate a default password if missing
       const password = payload?.password && String(payload.password).length >= 6
@@ -500,10 +537,7 @@ const TOOLS = [
 ];
 
 function pickTaskType(messages: any[]): AITaskType {
-  const hasImage = messages.some((message) =>
-    Array.isArray(message?.content) &&
-    message.content.some((part: any) => part?.type === "image_url" && part?.image_url?.url)
-  );
+  const hasImage = messages.some((message) => messageHasImage(message));
   return hasImage ? "image" : "fast_chat";
 }
 
@@ -577,7 +611,10 @@ async function callAI(
     };
   }
 
-  const garageMode = isGarageQuery(currentUserText);
+  const hasImageContext = latestUserHasImage(chatMessages);
+  const garageMode = hasImageContext || isGarageTopic(currentUserText);
+  const allowTools = isSystemDataQuery(currentUserText) && !hasImageContext;
+  const displayRoles = user.roles.map((role) => role === "super_admin" ? "high_clearance" : role);
   const memoryBlock = (savedMemories ?? []).length
     ? (savedMemories ?? [])
         .map((memory) => `- ${memory.memory_key}: ${memory.memory_value}`)
@@ -588,11 +625,13 @@ async function callAI(
     + (garageMode ? GARAGE_SYSTEM_PROMPT : "")
     + MEMORY_RULES
     + `\n\nSaved memory for this user:\n${memoryBlock}`
-    + `\n\nCurrent user: **${user.displayName}** (first name: ${user.firstName}, email: ${user.email}, roles: [${user.roles.join(", ") || "none"}]).`
+    + `\n\nCurrent user: **${user.displayName}** (first name: ${user.firstName}, email: ${user.email}, roles: [${displayRoles.join(", ") || "none"}]).`
     + `\n\nCurrent mode: ${garageMode ? "garage-aware" : "general conversation"}.`
     + `\n- Continue naturally from the recent messages below.`
     + `\n- Do not restart the conversation or reintroduce yourself unless the user asks.`
     + `\n- If the topic is not about the garage or system data, answer directly without mentioning workshop records.`
+    + `\n- If images are attached, inspect the visible content first and describe what you can actually see before discussing any records.`
+    + `\n- Only use garage records or tools when the user is explicitly asking about saved jobs, stock, invoices, staff actions, or other stored system data.`
   );
 
   const messages: any[] = [
@@ -607,7 +646,7 @@ async function callAI(
     const msg = await generateAIResponse(sb, {
       taskType: pickTaskType(messages),
       messages,
-      tools: garageMode ? TOOLS : undefined,
+      tools: allowTools ? TOOLS : undefined,
     });
 
     const toolCalls = msg.tool_calls ?? [];

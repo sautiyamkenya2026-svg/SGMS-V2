@@ -11,9 +11,11 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
+import { friendlyErrorMessage } from "@/lib/app-error";
 import { useAuth, type Role } from "@/lib/auth";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
+import { formatRoleLabel } from "@/lib/roles";
 
 type Profile = { id: string; email: string | null; display_name: string | null; avatar_url?: string | null; phone?: string | null; national_id?: string | null; address?: string | null; notes?: string | null };
 type RoleRow = { user_id: string; role: Role };
@@ -116,7 +118,7 @@ export default function Users() {
       toast({ title: "Label and key required", variant: "destructive" }); return;
     }
     const { error } = await supabase.from("ai_keys").insert({ ...keyForm, api_key: keyForm.api_key.trim() });
-    if (error) { toast({ title: "Failed", description: error.message, variant: "destructive" }); return; }
+    if (error) { toast({ title: "Failed", description: friendlyErrorMessage(error, "Could not add that AI key."), variant: "destructive" }); return; }
     toast({ title: "Key added — will be used in rotation" });
     setKeyForm({ provider: keyForm.provider, label: "", api_key: "" });
     loadAiKeys();
@@ -161,7 +163,7 @@ export default function Users() {
     }));
     const { error } = await supabase.from("app_settings").upsert(payload);
     setSavingAiSettings(false);
-    if (error) { toast({ title: "Save failed", description: error.message, variant: "destructive" }); return; }
+    if (error) { toast({ title: "Save failed", description: friendlyErrorMessage(error, "Could not save those AI settings."), variant: "destructive" }); return; }
     toast({ title: "AI routing and fallback keys updated" });
   };
 
@@ -171,10 +173,10 @@ export default function Users() {
     ? ["reception", "mechanic", "storekeeper", "gateman", "manager", "director", "admin", "super_admin"]
     : ["reception", "mechanic", "storekeeper", "gateman", "manager", "admin"];
 
-  // Filter visible users: hide super_admins from normal admins
+  // Highest-clearance accounts stay hidden from the roster.
   const visible = profiles.filter(p => {
     const userRoles = roles.filter(r => r.user_id === p.id).map(r => r.role);
-    if (!isSuper && userRoles.includes("super_admin")) return false;
+    if (userRoles.includes("super_admin")) return false;
     return true;
   });
 
@@ -198,7 +200,7 @@ export default function Users() {
       toast({ title: "Password must be at least 6 characters", variant: "destructive" }); return;
     }
     if (form.role === "super_admin" && !isSuper) {
-      toast({ title: "Forbidden", variant: "destructive" }); return;
+      toast({ title: "Access restricted", description: "You do not have sufficient clearance to create that account type.", variant: "destructive" }); return;
     }
     setCreating(true);
     try {
@@ -213,7 +215,7 @@ export default function Users() {
       if (error || (data as any)?.error) {
         const message = (data as any)?.error
           ?? await readEdgeFunctionErrorMessage(error, response, "Create failed");
-        toast({ title: "Create failed", description: message, variant: "destructive" });
+        toast({ title: "Create failed", description: friendlyErrorMessage(message, "Could not create that user."), variant: "destructive" });
         return;
       }
       const newId = (data as any)?.user_id as string | undefined;
@@ -225,7 +227,7 @@ export default function Users() {
         const path = `${newId}/avatar-${Date.now()}.${ext}`;
         const { error: upErr } = await supabase.storage.from("avatars").upload(path, photoFile, { upsert: true });
         if (upErr) {
-          toast({ title: "Photo upload failed", description: upErr.message, variant: "destructive" });
+          toast({ title: "Photo upload failed", description: friendlyErrorMessage(upErr, "Could not upload that photo."), variant: "destructive" });
         } else {
           const { data: pub } = supabase.storage.from("avatars").getPublicUrl(path);
           avatarUrl = pub.publicUrl;
@@ -260,7 +262,7 @@ export default function Users() {
 
       toast({
         title: "User created ✓",
-        description: `${form.display_name} can sign in as ${form.role.replace("_", " ")}.`,
+        description: `${form.display_name} can sign in as ${formatRoleLabel(form.role)}.`,
       });
 
       // Optionally enrol fingerprint right after creation, on this device
@@ -279,7 +281,7 @@ export default function Users() {
   const addRole = async (userId: string, role: Role) => {
     if (role === "super_admin" && !isSuper) return;
     const { error } = await supabase.from("user_roles").insert({ user_id: userId, role });
-    if (error) { toast({ title: "Failed", description: error.message, variant: "destructive" }); return; }
+    if (error) { toast({ title: "Failed", description: friendlyErrorMessage(error, "Could not add that role."), variant: "destructive" }); return; }
     toast({ title: "Role added" });
     load();
   };
@@ -287,7 +289,7 @@ export default function Users() {
   const removeRole = async (userId: string, role: Role) => {
     if (role === "super_admin" && !isSuper) return;
     const { error } = await supabase.from("user_roles").delete().eq("user_id", userId).eq("role", role);
-    if (error) { toast({ title: "Failed", description: error.message, variant: "destructive" }); return; }
+    if (error) { toast({ title: "Failed", description: friendlyErrorMessage(error, "Could not remove that role."), variant: "destructive" }); return; }
     toast({ title: "Role removed" });
     load();
   };
@@ -352,7 +354,7 @@ export default function Users() {
       notes: editForm.notes || null,
     }).eq("id", editing.id);
     setSavingEdit(false);
-    if (error) { toast({ title: "Save failed", description: error.message, variant: "destructive" }); return; }
+    if (error) { toast({ title: "Save failed", description: friendlyErrorMessage(error, "Could not save those user details."), variant: "destructive" }); return; }
     const userRoles = roles.filter(r => r.user_id === editing.id).map(r => r.role);
     if (userRoles.includes("mechanic") && editing.display_name) {
       await supabase.from("mechanics").update({
@@ -379,11 +381,8 @@ export default function Users() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            User Management
-            {isSuper && <Badge className="bg-amber-500 text-amber-950"><ShieldCheck className="h-3 w-3 mr-1" />Super Admin</Badge>}
-          </h1>
-          <p className="text-sm text-muted-foreground">Add staff and assign roles. {isSuper ? "You can create every role, including other super admins." : "Admins can create staff and other admin accounts."}</p>
+          <h1 className="text-2xl font-bold tracking-tight">User Management</h1>
+          <p className="text-sm text-muted-foreground">Add staff and assign roles. High-clearance accounts stay hidden from the roster.</p>
         </div>
         <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) resetForm(); }}>
           <DialogTrigger asChild><Button className="bg-gradient-primary"><Plus className="h-4 w-4 mr-2" />Add user</Button></DialogTrigger>
@@ -450,7 +449,7 @@ export default function Users() {
                   <Label>Role *</Label>
                   <Select value={form.role} onValueChange={(v: Role) => setForm({ ...form, role: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>{allRoles.map(r => <SelectItem key={r} value={r} className="capitalize">{r.replace("_"," ")}</SelectItem>)}</SelectContent>
+                  <SelectContent>{allRoles.map(r => <SelectItem key={r} value={r}>{formatRoleLabel(r)}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div>
@@ -547,7 +546,7 @@ export default function Users() {
         <Card className="p-5 border-amber-500/40">
           <div className="flex items-center gap-2 mb-3">
             <ShieldCheck className="h-4 w-4 text-amber-500" />
-            <h3 className="font-semibold">AI Routing <span className="text-xs text-muted-foreground font-normal">(super admin only)</span></h3>
+            <h3 className="font-semibold">Restricted AI Routing <span className="text-xs text-muted-foreground font-normal">(high-clearance only)</span></h3>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
             Route fast chat, structured analysis, and image tasks to the provider you prefer. These settings are read by the edge functions at runtime.
@@ -782,7 +781,7 @@ export default function Users() {
                           <SelectTrigger className="w-36"><SelectValue placeholder="+ add role" /></SelectTrigger>
                           <SelectContent>
                             {allRoles.filter(r => !userRoles.includes(r)).map(r => (
-                              <SelectItem key={r} value={r} className="capitalize">{r.replace("_"," ")}</SelectItem>
+                              <SelectItem key={r} value={r}>{formatRoleLabel(r)}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>

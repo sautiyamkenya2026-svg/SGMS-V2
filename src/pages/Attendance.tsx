@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
+import { friendlyErrorMessage } from "@/lib/app-error";
 import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 
@@ -99,6 +100,11 @@ export default function Attendance() {
     const typedLog = (log ?? []) as AttendanceRow[];
     const roleMap = new Map<string, string>();
     typedRoles.forEach((row) => roleMap.set(row.user_id, row.role));
+    const hiddenUserIds = new Set(
+      typedRoles
+        .filter((row) => row.role === "super_admin")
+        .map((row) => row.user_id),
+    );
 
     const lastByUser = new Map<string, AttendanceRow>();
     typedLog.forEach((row) => {
@@ -106,13 +112,15 @@ export default function Attendance() {
     });
 
     setStaff(
-      ((profiles ?? []) as StaffProfileRow[]).map((profile) => ({
-        ...profile,
-        role: roleMap.get(profile.id) ?? null,
-        last_event: lastByUser.get(profile.id) ?? null,
-      })),
+      ((profiles ?? []) as StaffProfileRow[])
+        .filter((profile) => !hiddenUserIds.has(profile.id))
+        .map((profile) => ({
+          ...profile,
+          role: roleMap.get(profile.id) ?? null,
+          last_event: lastByUser.get(profile.id) ?? null,
+        })),
     );
-    setEntries(typedLog);
+    setEntries(typedLog.filter((entry) => !hiddenUserIds.has(entry.user_id)));
     setLoading(false);
   };
 
@@ -199,7 +207,7 @@ export default function Attendance() {
       toast.success(`${member.display_name ?? member.email} ${event === "check_in" ? "checked in" : "checked out"} successfully.`);
       await load();
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Failed";
+      const message = friendlyErrorMessage(error, "Could not record that attendance event.");
       toast.error(message);
     } finally {
       setBusy(null);
@@ -272,7 +280,7 @@ export default function Attendance() {
           </p>
         </div>
         <Badge variant="secondary" className="gap-1">
-          <Fingerprint className="h-3 w-3" /> Operator: {user?.displayName}
+          <Fingerprint className="h-3 w-3" /> Operator: {hasRole("super_admin") ? "Operator" : user?.displayName}
         </Badge>
       </div>
 
