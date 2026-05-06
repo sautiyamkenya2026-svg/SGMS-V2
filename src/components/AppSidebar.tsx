@@ -71,6 +71,13 @@ export function AppSidebar() {
             </div>
           )}
         </div>
+        {!collapsed && batteryLevel !== null && (
+          <div className="mt-3 inline-flex items-center gap-1 rounded-full border border-sidebar-border bg-sidebar-accent/60 px-2 py-1 text-[10px] text-sidebar-foreground/70">
+            <Battery className={`h-3 w-3 ${batteryCharging ? "text-green-400" : batteryLevel < 20 ? "text-red-400" : "text-sidebar-foreground/70"}`} />
+            <span>{batteryLevel}%</span>
+            {batteryCharging && <span className="text-green-400">Charging</span>}
+          </div>
+        )}
       </SidebarHeader>
 
       <SidebarContent>

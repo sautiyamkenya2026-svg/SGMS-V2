@@ -11,6 +11,7 @@ import { Plus, Search, FileText, DollarSign, Clock, CheckCircle2, Download, Rece
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { generateDepositInvoicePDF, generateInvoicePDF, generateQuotationPDF, generateReceiptPDF } from "@/lib/pdf-templates";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 type DocumentType = "quotation" | "deposit_invoice" | "invoice" | "receipt";
 
@@ -134,6 +135,7 @@ async function downloadDocument(doc: DocumentRow) {
 }
 
 export default function Invoices() {
+  const isMobile = useIsMobile();
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -275,10 +277,10 @@ export default function Invoices() {
           <h1 className="text-2xl font-bold tracking-tight">Invoices</h1>
           <p className="text-sm text-muted-foreground">One documents register for quotations, deposit invoices, invoices, and receipts.</p>
         </div>
-        <Button className="bg-gradient-primary" onClick={openNew}><Plus className="h-4 w-4 mr-2" />New document</Button>
+        <Button className="w-full bg-gradient-primary sm:w-auto" onClick={openNew}><Plus className="h-4 w-4 mr-2" />New document</Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <Card className="p-4">
           <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><FileText className="h-3.5 w-3.5" />Documents</div>
           <p className="mt-1 text-2xl font-bold">{totals.count}</p>
@@ -301,13 +303,13 @@ export default function Invoices() {
         </Card>
       </div>
 
-      <div className="flex flex-wrap gap-3">
-        <div className="relative flex-1 min-w-64 max-w-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+        <div className="relative w-full min-w-0 sm:flex-1 sm:min-w-64 sm:max-w-sm">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input placeholder="Search plate, doc #, payer, technician..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
         </div>
         <Select value={docTypeFilter} onValueChange={setDocTypeFilter}>
-          <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All document types</SelectItem>
             <SelectItem value="quotation">Quotation</SelectItem>
@@ -317,7 +319,7 @@ export default function Invoices() {
           </SelectContent>
         </Select>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-full sm:w-40"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
             <SelectItem value="draft">Draft</SelectItem>
@@ -329,61 +331,101 @@ export default function Invoices() {
         </Select>
       </div>
 
-      <Card>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs uppercase text-muted-foreground">
-                <th className="p-3">Date</th>
-                <th className="p-3">Type</th>
-                <th className="p-3">Doc #</th>
-                <th className="p-3">Plate / payer</th>
-                <th className="p-3">Time in / out</th>
-                <th className="p-3 text-right">Amount</th>
-                <th className="p-3 text-right">Paid</th>
-                <th className="p-3">Status</th>
-                <th className="p-3 text-right">Download</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">Loading...</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">No documents found</td></tr>
-              ) : filtered.map((doc) => (
-                <tr key={doc.id} className="border-b last:border-0 hover:bg-muted/40">
-                  <td className="p-3 text-muted-foreground cursor-pointer" onClick={() => openEdit(doc)}>{doc.date}</td>
-                  <td className="p-3 cursor-pointer" onClick={() => openEdit(doc)}>
-                    <Badge variant="outline">{DOC_LABELS[doc.doc_type]}</Badge>
-                  </td>
-                  <td className="p-3 font-mono cursor-pointer" onClick={() => openEdit(doc)}>
-                    {doc.invoice_no ?? "-"}{doc.invoice_book_no ? ` / bk${doc.invoice_book_no}` : ""}
-                  </td>
-                  <td className="p-3 cursor-pointer" onClick={() => openEdit(doc)}>
+      <Card className="overflow-hidden">
+        {isMobile ? (
+          <div className="space-y-3 p-4">
+            {loading ? (
+              <p className="py-8 text-center text-muted-foreground">Loading...</p>
+            ) : filtered.length === 0 ? (
+              <p className="py-8 text-center text-muted-foreground">No documents found</p>
+            ) : filtered.map((doc) => (
+              <div key={doc.id} className="rounded-lg border p-4">
+                <button className="w-full text-left" onClick={() => openEdit(doc)}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <Badge variant="outline">{DOC_LABELS[doc.doc_type]}</Badge>
+                      <p className="mt-2 font-mono text-sm">{doc.invoice_no ?? "-"}{doc.invoice_book_no ? ` / bk${doc.invoice_book_no}` : ""}</p>
+                    </div>
+                    {statusBadge(doc.status)}
+                  </div>
+                  <div className="mt-3 space-y-1">
                     <p className="font-bold">{doc.plate ?? "-"}</p>
                     <p className="text-xs text-muted-foreground">{doc.payer_name ?? "-"}</p>
-                  </td>
-                  <td className="p-3 text-xs text-muted-foreground">{fmtTime(doc.time_in)} {"->"} {fmtTime(doc.time_out)}</td>
-                  <td className="p-3 text-right font-bold">{fmt(doc.amount)}</td>
-                  <td className="p-3 text-right">{fmt(doc.amount_paid)}</td>
-                  <td className="p-3">{statusBadge(doc.status)}</td>
-                  <td className="p-3 text-right">
-                    <Button size="sm" variant="outline" onClick={() => downloadDocument(doc)}>
-                      <Download className="h-3.5 w-3.5 mr-1" />PDF
-                    </Button>
-                  </td>
+                    <p className="text-xs text-muted-foreground">{doc.date} • {fmtTime(doc.time_in)} {"->"} {fmtTime(doc.time_out)}</p>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-[11px] text-muted-foreground">Amount</p>
+                      <p className="font-bold">{fmt(doc.amount)}</p>
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-3">
+                      <p className="text-[11px] text-muted-foreground">Paid</p>
+                      <p className="font-bold">{fmt(doc.amount_paid)}</p>
+                    </div>
+                  </div>
+                </button>
+                <Button size="sm" variant="outline" className="mt-3 w-full" onClick={() => downloadDocument(doc)}>
+                  <Download className="mr-1 h-3.5 w-3.5" />PDF
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs uppercase text-muted-foreground">
+                  <th className="p-3">Date</th>
+                  <th className="p-3">Type</th>
+                  <th className="p-3">Doc #</th>
+                  <th className="p-3">Plate / payer</th>
+                  <th className="p-3">Time in / out</th>
+                  <th className="p-3 text-right">Amount</th>
+                  <th className="p-3 text-right">Paid</th>
+                  <th className="p-3">Status</th>
+                  <th className="p-3 text-right">Download</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">Loading...</td></tr>
+                ) : filtered.length === 0 ? (
+                  <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">No documents found</td></tr>
+                ) : filtered.map((doc) => (
+                  <tr key={doc.id} className="border-b last:border-0 hover:bg-muted/40">
+                    <td className="cursor-pointer p-3 text-muted-foreground" onClick={() => openEdit(doc)}>{doc.date}</td>
+                    <td className="cursor-pointer p-3" onClick={() => openEdit(doc)}>
+                      <Badge variant="outline">{DOC_LABELS[doc.doc_type]}</Badge>
+                    </td>
+                    <td className="cursor-pointer p-3 font-mono" onClick={() => openEdit(doc)}>
+                      {doc.invoice_no ?? "-"}{doc.invoice_book_no ? ` / bk${doc.invoice_book_no}` : ""}
+                    </td>
+                    <td className="cursor-pointer p-3" onClick={() => openEdit(doc)}>
+                      <p className="font-bold">{doc.plate ?? "-"}</p>
+                      <p className="text-xs text-muted-foreground">{doc.payer_name ?? "-"}</p>
+                    </td>
+                    <td className="p-3 text-xs text-muted-foreground">{fmtTime(doc.time_in)} {"->"} {fmtTime(doc.time_out)}</td>
+                    <td className="p-3 text-right font-bold">{fmt(doc.amount)}</td>
+                    <td className="p-3 text-right">{fmt(doc.amount_paid)}</td>
+                    <td className="p-3">{statusBadge(doc.status)}</td>
+                    <td className="p-3 text-right">
+                      <Button size="sm" variant="outline" onClick={() => downloadDocument(doc)}>
+                        <Download className="mr-1 h-3.5 w-3.5" />PDF
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl overflow-hidden">
           <DialogHeader><DialogTitle>{editing ? "Edit document" : "New document"}</DialogTitle></DialogHeader>
-          <div className="grid gap-3 py-2 max-h-[70vh] overflow-y-auto pr-1">
-            <div className="grid grid-cols-3 gap-3">
+          <div className="grid max-h-[70vh] gap-3 overflow-y-auto py-2 pr-1">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <Label>Document type</Label>
                 <Select value={form.doc_type} onValueChange={(value: DocumentType) => setForm({ ...form, doc_type: value })}>
@@ -399,16 +441,16 @@ export default function Invoices() {
               <div><Label>Date</Label><Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>
               <div><Label>Doc #</Label><Input value={form.invoice_no} onChange={(e) => setForm({ ...form, invoice_no: e.target.value })} /></div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div><Label>Book #</Label><Input value={form.invoice_book_no} onChange={(e) => setForm({ ...form, invoice_book_no: e.target.value })} /></div>
               <div><Label>Plate</Label><Input value={form.plate} onChange={(e) => setForm({ ...form, plate: e.target.value })} /></div>
               <div><Label>Payer type</Label><Select value={form.payer_type} onValueChange={(value) => setForm({ ...form, payer_type: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="client">Client</SelectItem><SelectItem value="insurance">Insurance</SelectItem></SelectContent></Select></div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div><Label>Payer name</Label><Input value={form.payer_name} onChange={(e) => setForm({ ...form, payer_name: e.target.value })} /></div>
               <div><Label>Customer phone</Label><Input value={form.customer_phone} onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /></div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <Label>Service type</Label>
                 <Select value={form.service_type} onValueChange={(value) => setForm({ ...form, service_type: value })}>
@@ -434,17 +476,17 @@ export default function Invoices() {
               </div>
               <div><Label>Technicians</Label><Input value={form.technicians} onChange={(e) => setForm({ ...form, technicians: e.target.value })} /></div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div><Label>Time in</Label><Input type="datetime-local" value={form.time_in} onChange={(e) => setForm({ ...form, time_in: e.target.value })} /></div>
               <div><Label>Time out</Label><Input type="datetime-local" value={form.time_out} onChange={(e) => setForm({ ...form, time_out: e.target.value })} /></div>
             </div>
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div><Label>Amount</Label><Input type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
               <div><Label>Discount</Label><Input type="number" value={form.discount} onChange={(e) => setForm({ ...form, discount: e.target.value })} /></div>
               <div><Label>Discount by</Label><Input value={form.discount_by} onChange={(e) => setForm({ ...form, discount_by: e.target.value })} /></div>
               <div><Label>Paid</Label><Input type="number" value={form.amount_paid} onChange={(e) => setForm({ ...form, amount_paid: e.target.value })} /></div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <Label>Status</Label>
                 <Select value={form.status} onValueChange={(value) => setForm({ ...form, status: value })}>

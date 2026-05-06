@@ -11,7 +11,7 @@ export default function Tronix() {
         <div>
           <h1 className="text-2xl font-display font-bold">Tronix</h1>
           <p className="text-sm text-muted-foreground">
-            Golden Automotive Solutions AI assistant for diagnostics, data answers, actions, and continuing chat history.
+            Golden Automotive Solutions AI assistant for diagnostics, workshop data, general questions, actions, and continuing chat history.
           </p>
         </div>
       </div>

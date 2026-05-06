@@ -12,6 +12,7 @@ import {
 import { Bar, BarChart, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface JobLookup {
   job: any;
@@ -29,6 +30,18 @@ const fmt = (n: number) => `KSh ${Math.round(n).toLocaleString()}`;
 const dayKey = (iso: string) => new Date(iso).toISOString().slice(0, 10);
 const netInvoiceAmount = (invoice: { amount?: number; discount?: number }) =>
   Math.max(0, Number(invoice.amount || 0) - Number(invoice.discount || 0));
+const invoiceOutstandingAmount = (invoice: { doc_type?: string; amount?: number; amount_paid?: number; discount?: number }) =>
+  invoice.doc_type === "invoice"
+    ? Math.max(0, netInvoiceAmount(invoice) - Number(invoice.amount_paid || 0))
+    : 0;
+const sumBilledInvoices = (documents: Array<{ doc_type?: string; amount?: number; discount?: number }>) =>
+  documents.reduce((sum, doc) => sum + (doc.doc_type === "invoice" ? netInvoiceAmount(doc) : 0), 0);
+const sumCollectedPayments = (documents: Array<{ doc_type?: string; amount_paid?: number }>) =>
+  documents.reduce((sum, doc) => (
+    doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice"
+      ? sum + Number(doc.amount_paid || 0)
+      : sum
+  ), 0);
 
 export default function Reports() {
   return (
@@ -39,7 +52,7 @@ export default function Reports() {
       </div>
 
       <Tabs defaultValue="job360">
-        <TabsList className="flex-wrap">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 bg-transparent p-0 sm:flex sm:flex-wrap">
           <TabsTrigger value="job360">Job 360°</TabsTrigger>
           <TabsTrigger value="financial">Financial</TabsTrigger>
           <TabsTrigger value="mechanics">Mechanics</TabsTrigger>
@@ -61,7 +74,6 @@ export default function Reports() {
 
 function FinancialTab() {
   const [loading, setLoading] = useState(true);
-  const [jobs, setJobs] = useState<any[]>([]);
   const [documents, setDocuments] = useState<any[]>([]);
   const [movements, setMovements] = useState<any[]>([]);
   const [petty, setPetty] = useState<any[]>([]);
@@ -70,13 +82,11 @@ function FinancialTab() {
     (async () => {
       const sinceIso = new Date(Date.now() - 21 * 24 * 3600 * 1000).toISOString();
       const sinceDay = sinceIso.slice(0, 10);
-      const [{ data: jobRows }, { data: docRows }, { data: mv }, { data: pc }] = await Promise.all([
-        supabase.from("jobs").select("started_at, completed_at, invoice_amount, receipt_amount, deposit_paid").gte("started_at", sinceIso),
-        supabase.from("invoices").select("doc_type, amount, amount_paid, date, updated_at, discount").gte("date", sinceDay),
+      const [{ data: docRows }, { data: mv }, { data: pc }] = await Promise.all([
+        supabase.from("invoices").select("doc_type, amount, amount_paid, date, updated_at, discount").limit(1000),
         supabase.from("stock_movements").select("created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", sinceIso).eq("type", "sale"),
         supabase.from("petty_cash_entries").select("date, amount, transaction_cost, type").gte("date", sinceDay),
       ]);
-      setJobs(jobRows ?? []);
       setDocuments(docRows ?? []);
       setMovements(mv ?? []);
       setPetty(pc ?? []);
@@ -92,10 +102,15 @@ function FinancialTab() {
       days.push(d);
       map.set(d, { day: d.slice(5), parts: 0, billed: 0, collected: 0 });
     }
-    let partsRevenue = 0, partsCost = 0, billed = 0, collected = 0, pettyOut = 0;
+    let partsRevenue = 0;
+    let partsCost = 0;
+    let pettyOut = 0;
+    let billed7d = 0;
+    let collected7d = 0;
     for (const m of movements) {
       const d = dayKey(m.created_at);
-      const row = map.get(d); if (!row) continue;
+      const row = map.get(d);
+      if (!row) continue;
       const sell = Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0);
       const cost = Number(m.buy_price ?? 0) * Number(m.qty ?? 0);
       row.parts += sell;
@@ -103,47 +118,65 @@ function FinancialTab() {
       partsCost += cost;
     }
     for (const doc of documents) {
-      const d = dayKey(doc.updated_at ?? doc.date);
-      const row = map.get(d); if (!row) continue;
-      if (doc.doc_type === "invoice") {
-        const invoiceAmount = netInvoiceAmount(doc);
-        row.billed += invoiceAmount;
-        billed += invoiceAmount;
-      }
+      const stamp = doc.updated_at ?? doc.date;
+      if (!stamp) continue;
+      const d = dayKey(stamp);
+      const row = map.get(d);
+      if (!row) continue;
+      const invoiceAmount = doc.doc_type === "invoice" ? netInvoiceAmount(doc) : 0;
       const received = doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice"
         ? Number(doc.amount_paid || 0)
         : 0;
+      row.billed += invoiceAmount;
       row.collected += received;
-      collected += received;
+      billed7d += invoiceAmount;
+      collected7d += received;
     }
     for (const p of petty) {
       if (p.type === "payment") pettyOut += Number(p.amount ?? 0) + Number(p.transaction_cost ?? 0);
     }
+    const finalInvoices = documents.filter((doc) => doc.doc_type === "invoice");
     const chart = days.map(d => map.get(d)!);
     return {
       chart,
-      totals: { billed, collected, partsRevenue, partsCost, pettyOut },
+      totals: {
+        invoiceCount: finalInvoices.length,
+        billed: sumBilledInvoices(documents),
+        billed7d,
+        collected: sumCollectedPayments(documents),
+        collected7d,
+        outstanding: documents.reduce((sum, doc) => sum + invoiceOutstandingAmount(doc), 0),
+        partsRevenue,
+        partsCost,
+        pettyOut,
+      },
     };
-  }, [jobs, documents, movements, petty]);
+  }, [documents, movements, petty]);
 
   if (loading) return <p className="text-center text-muted-foreground py-8">Loading financials…</p>;
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Card className="stat-card">
-          <p className="text-xs text-muted-foreground">Billed work (7d)</p>
-          <p className="text-3xl font-bold mt-1">{fmt(totals.billed)}</p>
-          <p className="text-xs text-success mt-1 flex items-center gap-1"><TrendingUp className="h-3 w-3" />Live</p>
+          <p className="text-xs text-muted-foreground">Final invoices</p>
+          <p className="mt-1 text-3xl font-bold">{totals.invoiceCount}</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">Matches the billing register.</p>
+        </Card>
+        <Card className="stat-card">
+          <p className="text-xs text-muted-foreground">Billed work</p>
+          <p className="mt-1 text-3xl font-bold">{fmt(totals.billed)}</p>
+          <p className="mt-1 flex items-center gap-1 text-xs text-success"><TrendingUp className="h-3 w-3" />Last 7d: {fmt(totals.billed7d)}</p>
         </Card>
         <Card className="stat-card">
           <p className="text-xs text-muted-foreground">Payments recorded</p>
-          <p className="text-3xl font-bold mt-1">{fmt(totals.collected)}</p>
+          <p className="mt-1 text-3xl font-bold">{fmt(totals.collected)}</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">Last 7d: {fmt(totals.collected7d)}</p>
         </Card>
         <Card className="stat-card">
-          <p className="text-xs text-muted-foreground">Parts margin</p>
-          <p className="text-3xl font-bold mt-1">{fmt(totals.partsRevenue - totals.partsCost)}</p>
-          <p className="text-[11px] text-muted-foreground">{fmt(totals.partsRevenue)} − {fmt(totals.partsCost)}</p>
+          <p className="text-xs text-muted-foreground">Open invoice balance</p>
+          <p className="mt-1 text-3xl font-bold">{fmt(totals.outstanding)}</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">Unpaid amount still sitting on invoices.</p>
         </Card>
         <Card className="stat-card">
           <p className="text-xs text-muted-foreground">Petty cash out</p>
@@ -168,6 +201,18 @@ function FinancialTab() {
           </ResponsiveContainer>
         </div>
       </Card>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card className="p-5">
+          <p className="text-xs text-muted-foreground">Parts margin (7d)</p>
+          <p className="mt-1 text-2xl font-bold">{fmt(totals.partsRevenue - totals.partsCost)}</p>
+          <p className="text-[11px] text-muted-foreground">{fmt(totals.partsRevenue)} minus {fmt(totals.partsCost)}</p>
+        </Card>
+        <Card className="p-5">
+          <p className="text-xs text-muted-foreground">Petty cash out (7d)</p>
+          <p className="mt-1 text-2xl font-bold">{fmt(totals.pettyOut)}</p>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -175,6 +220,7 @@ function FinancialTab() {
 function MechanicsTab() {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const isMobile = useIsMobile();
   useEffect(() => {
     (async () => {
       const [{ data: jobs }, { data: assignments }, { data: mechanics }] = await Promise.all([
@@ -233,7 +279,7 @@ function MechanicsTab() {
   if (loading) return <p className="text-center text-muted-foreground py-8">Loading…</p>;
   return (
     <Card>
-      <div className="overflow-x-auto">
+      <div className={isMobile ? "overflow-x-auto px-2" : "overflow-x-auto"}>
         <table className="w-full text-sm">
           <thead><tr className="border-b text-left text-xs uppercase text-muted-foreground">
             <th className="p-3">Mechanic</th><th className="p-3 text-right">Jobs</th>
@@ -365,7 +411,7 @@ function CustomersTab() {
         {leadRows.length === 0 ? <p className="text-sm text-muted-foreground">No recent leads yet.</p>
           : <div className="space-y-2">
             {leadRows.slice(0, 12).map(lead => (
-              <div key={`${lead.plate}-${lead.created_at}`} className="flex justify-between items-center bg-muted/40 rounded-md p-3 text-sm">
+              <div key={`${lead.plate}-${lead.created_at}`} className="flex flex-col gap-2 rounded-md bg-muted/40 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <span>{lead.plate} Â· {lead.customer_name ?? "â€”"} {lead.customer_phone ? `Â· ${lead.customer_phone}` : ""}</span>
                 <Badge variant="secondary">{(lead.lead_source ?? "unknown").replaceAll("_", " ")}</Badge>
               </div>
@@ -374,14 +420,14 @@ function CustomersTab() {
       </Card>
 
       <Card className="p-5">
-      <div className="flex justify-between items-center mb-4">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h3 className="font-semibold">Vehicles due for service (last visit &gt; 80 days)</h3>
         <Button size="sm" variant="outline" disabled title="SMS gateway not yet configured"><Send className="h-4 w-4 mr-2" />Send SMS reminders</Button>
       </div>
       {rows.length === 0 ? <p className="text-sm text-muted-foreground">No customers due for reminders yet.</p>
         : <div className="space-y-2">
           {rows.map(v => (
-            <div key={v.plate} className="flex justify-between items-center bg-muted/40 rounded-md p-3 text-sm">
+            <div key={v.plate} className="flex flex-col gap-2 rounded-md bg-muted/40 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
               <span>{v.plate} · {v.customer_name ?? "—"} {v.customer_phone ? `· ${v.customer_phone}` : ""}</span>
               <Badge variant="secondary">{v.days} days ago</Badge>
             </div>
@@ -420,7 +466,7 @@ function AuditTab() {
       <div className="divide-y">
         {items.length === 0 ? <p className="p-6 text-center text-muted-foreground text-sm">No activity yet.</p>
           : items.map((a, i) => (
-          <div key={i} className="flex items-center justify-between p-3 text-sm hover:bg-muted/40">
+          <div key={i} className="flex flex-col gap-1 p-3 text-sm hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between">
             <div><p className="font-medium">{a.action}</p><p className="text-xs text-muted-foreground">{a.user}</p></div>
             <span className="text-xs text-muted-foreground font-mono">{new Date(a.time).toLocaleString()}</span>
           </div>
@@ -497,7 +543,7 @@ function Job360() {
     <div className="space-y-4">
       <Card className="p-5">
         <Label>Look up a job number or vehicle plate</Label>
-        <div className="flex gap-2 mt-2">
+        <div className="mt-2 flex flex-col gap-2 sm:flex-row">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -508,7 +554,7 @@ function Job360() {
               className="pl-9"
             />
           </div>
-          <Button onClick={search} disabled={loading} className="bg-gradient-primary">
+          <Button onClick={search} disabled={loading} className="w-full bg-gradient-primary sm:w-auto">
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
           </Button>
         </div>
@@ -528,8 +574,8 @@ function JobReport({ report }: { report: JobLookup }) {
   const partsCost = parts.reduce((s, m) => s + (Number(m.buy_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const partsRevenue = parts.reduce((s, m) => s + (Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const pettyTotal = petty.reduce((s, e) => s + Number(e.amount ?? 0), 0);
-  const invoiced = Number(job.invoice_amount || invoices.reduce((s, i) => s + netInvoiceAmount(i), 0));
-  const paid = Number(job.receipt_amount || invoices.reduce((s, i) => s + Number(i.amount_paid ?? 0), 0));
+  const invoiced = Number(job.invoice_amount || sumBilledInvoices(invoices));
+  const paid = Number(job.receipt_amount || sumCollectedPayments(invoices));
   const jobTotal = Number(job.invoice_amount || job.quotation_amount || job.estimate || 0);
   const profit = jobTotal - partsCost - pettyTotal;
   const mechanicLabel = jobMechanics.length > 0
@@ -554,7 +600,7 @@ function JobReport({ report }: { report: JobLookup }) {
         </div>
       </Card>
 
-      <div className="grid gap-3 md:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Card className="p-4"><p className="text-xs text-muted-foreground">Job total</p><p className="text-xl font-bold">KSh {jobTotal.toLocaleString()}</p></Card>
         <Card className="p-4"><p className="text-xs text-muted-foreground">Parts cost</p><p className="text-xl font-bold">KSh {partsCost.toLocaleString()}</p></Card>
         <Card className="p-4"><p className="text-xs text-muted-foreground">Parts billed</p><p className="text-xl font-bold">KSh {partsRevenue.toLocaleString()}</p></Card>
@@ -591,7 +637,7 @@ function JobReport({ report }: { report: JobLookup }) {
           ) : (
             <ul className="space-y-2 text-sm">
               {previous.map(p => (
-                <li key={p.id} className="flex justify-between bg-muted/40 rounded p-2">
+                <li key={p.id} className="flex flex-col gap-1 rounded bg-muted/40 p-2 sm:flex-row sm:items-center sm:justify-between">
                   <span><strong className="font-mono text-primary">{p.job_no}</strong> · {p.complaint ?? "—"}</span>
                   <span className="text-xs text-muted-foreground">{new Date(p.created_at).toLocaleDateString()}</span>
                 </li>
@@ -606,7 +652,8 @@ function JobReport({ report }: { report: JobLookup }) {
         {parts.length === 0 ? (
           <p className="text-sm text-muted-foreground">No parts linked to this job.</p>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="min-w-[640px] w-full text-sm">
             <thead><tr className="border-b text-xs uppercase text-muted-foreground"><th className="text-left p-2">Part</th><th className="text-right p-2">Qty</th><th className="text-right p-2">Buy</th><th className="text-right p-2">Sell</th><th className="text-right p-2">Type</th></tr></thead>
             <tbody>
               {parts.map((m, i) => (
@@ -620,6 +667,7 @@ function JobReport({ report }: { report: JobLookup }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </Card>
 
@@ -631,7 +679,7 @@ function JobReport({ report }: { report: JobLookup }) {
           ) : (
             <ul className="space-y-2 text-sm">
               {invoices.map(i => (
-                <li key={i.id} className="flex justify-between bg-muted/40 rounded p-2">
+                <li key={i.id} className="flex flex-col gap-1 rounded bg-muted/40 p-2 sm:flex-row sm:items-center sm:justify-between">
                   <span>{i.doc_type ?? "invoice"} · {i.invoice_no ?? i.id.slice(0, 8)}</span>
                   <span>KSh {Number(i.amount).toLocaleString()} · paid {Number(i.amount_paid).toLocaleString()}</span>
                 </li>
@@ -648,7 +696,7 @@ function JobReport({ report }: { report: JobLookup }) {
           ) : (
             <ul className="space-y-2 text-sm">
               {petty.map(e => (
-                <li key={e.id} className="flex justify-between bg-muted/40 rounded p-2">
+                <li key={e.id} className="flex flex-col gap-1 rounded bg-muted/40 p-2 sm:flex-row sm:items-center sm:justify-between">
                   <span>{e.payee ?? e.details ?? e.type}</span>
                   <span>KSh {Number(e.amount).toLocaleString()}</span>
                 </li>
