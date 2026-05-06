@@ -13,6 +13,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { useAuth, type Role } from "@/lib/auth";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { invokeEdgeFunction } from "@/lib/invoke-edge";
 
 type Profile = { id: string; email: string | null; display_name: string | null; avatar_url?: string | null; phone?: string | null; national_id?: string | null; address?: string | null; notes?: string | null };
 type RoleRow = { user_id: string; role: Role };
@@ -201,7 +202,7 @@ export default function Users() {
     }
     setCreating(true);
     try {
-      const { data, error, response } = await supabase.functions.invoke("admin-create-user", {
+      const { data, error, response } = await invokeEdgeFunction("admin-create-user", {
         body: {
           email: form.email,
           password: form.password,

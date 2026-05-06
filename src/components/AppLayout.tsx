@@ -69,14 +69,14 @@ export function AppLayout({ children }: { children?: ReactNode }) {
   return (
     <SidebarProvider>
       <div
-        className="flex min-h-screen w-full bg-background"
+        className="flex min-h-screen min-w-0 w-full bg-background"
         style={{
           paddingTop: "max(var(--safe-area-top), 1rem)",
           paddingBottom: "var(--safe-area-bottom)",
         }}
       >
         <AppSidebar />
-        <div className="flex flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col">
           <SchemaHealthBanner />
           <header className="flex min-h-14 items-center gap-2 border-b bg-card px-4 shadow-sm">
             <SidebarTrigger />
@@ -178,7 +178,7 @@ export function AppLayout({ children }: { children?: ReactNode }) {
               </DropdownMenu>
             </div>
           </header>
-          <main className="flex-1 overflow-auto p-4 animate-fade-in sm:p-6">
+          <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 animate-fade-in sm:p-6">
             {children ?? <Outlet />}
           </main>
         </div>

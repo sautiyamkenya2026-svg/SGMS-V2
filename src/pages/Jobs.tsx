@@ -21,6 +21,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { invokeEdgeFunction } from "@/lib/invoke-edge";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
 import {
   generateInvoicePDF, generateQuotationPDF, generateReceiptPDF,
@@ -93,6 +94,8 @@ interface Job {
   deposit_paid: number;
   discount_amount: number;
   discount_reason: string | null;
+  return_visit_type: "same_problem" | "related_problem" | "new_problem" | null;
+  return_visit_notes: string | null;
   assigned_mechanic_id: string | null;
   client_feedback_token: string | null;
   client_approved_at: string | null;
@@ -155,6 +158,26 @@ const isJobSettled = (job: Partial<Job>) => {
 type GatePassRow = { id: string; pass_no: string; issued_at: string };
 type JobCardPhotoKind = "plate" | "front" | "back" | "left" | "right" | "door_jamb";
 type JobCardPhotoDraft = { file: File; preview: string };
+type ReturnVisitType = "same_problem" | "related_problem" | "new_problem";
+type ReturnVisitJob = {
+  id: string;
+  job_no: string;
+  status: JobStatus;
+  customer_name: string | null;
+  customer_phone: string | null;
+  vehicle_label: string | null;
+  reported_problem: string | null;
+  complaint: string | null;
+  service_type: string | null;
+  paint_color_code: string | null;
+  has_insurance: boolean;
+  insurance_company: string | null;
+  insurance_policy_no: string | null;
+  lead_source: string | null;
+  lead_source_detail: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
 
 const JOB_CARD_PHOTO_LABELS: Record<JobCardPhotoKind, string> = {
   plate: "Plate",
@@ -246,8 +269,13 @@ export default function Jobs() {
   const { user, loading: authLoading } = useAuth();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [openJob, setOpenJob] = useState<Job | null>(null);
-  const [tab, setTab] = useState("active");
+  const [tab, setTab] = useState("new_checkin");
   const [loading, setLoading] = useState(true);
+  const activeColumns = useMemo(() => columns.filter((column) => column.key !== "completed"), []);
+  const completedJobs = useMemo(
+    () => jobs.filter((job) => job.status === "completed" || job.status === "closed"),
+    [jobs],
+  );
 
   const load = async () => {
     if (authLoading) return;
@@ -343,14 +371,19 @@ export default function Jobs() {
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList>
-          <TabsTrigger value="checkin">Check-In</TabsTrigger>
+        <TabsList className="h-auto w-full flex-wrap justify-start gap-2 bg-transparent p-0">
+          <TabsTrigger value="new_checkin">New Check-In</TabsTrigger>
+          <TabsTrigger value="returned_checkin">Returned Check-In</TabsTrigger>
           <TabsTrigger value="active">Active Jobs</TabsTrigger>
-          <TabsTrigger value="billing">Completed / Gate Pass</TabsTrigger>
+          <TabsTrigger value="completed">Completed</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="checkin" className="mt-4">
-          <CheckInForm onCreated={() => { setTab("active"); load(); }} userId={user?.id} />
+        <TabsContent value="new_checkin" className="mt-4">
+          <CheckInForm mode="new" onCreated={() => { setTab("active"); load(); }} userId={user?.id} />
+        </TabsContent>
+
+        <TabsContent value="returned_checkin" className="mt-4">
+          <CheckInForm mode="returned" onCreated={() => { setTab("active"); load(); }} userId={user?.id} />
         </TabsContent>
 
         <TabsContent value="active" className="mt-4">
@@ -358,7 +391,7 @@ export default function Jobs() {
             <p className="text-center text-muted-foreground py-8">Loading…</p>
           ) : (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
-              {columns.map(col => {
+              {activeColumns.map(col => {
                 const items = jobs.filter(j => j.status === col.key);
                 return (
                   <div key={col.key} className="flex flex-col rounded-xl bg-muted/30 p-3">
@@ -398,16 +431,16 @@ export default function Jobs() {
           )}
         </TabsContent>
 
-        <TabsContent value="billing" className="mt-4">
+        <TabsContent value="completed" className="mt-4">
           <Card>
             <div className="p-4 border-b">
               <h3 className="font-semibold">Completed jobs ready for billing & gate pass</h3>
             </div>
             <div className="divide-y">
-              {jobs.filter(j => j.status === "completed" || j.status === "closed").map(j => (
+              {completedJobs.map(j => (
                 <BillingRow key={j.id} job={j} onOpen={() => setOpenJob(j)} onChange={load} />
               ))}
-              {jobs.filter(j => j.status === "completed" || j.status === "closed").length === 0 && (
+              {completedJobs.length === 0 && (
                 <p className="p-6 text-center text-muted-foreground text-sm">No completed jobs yet.</p>
               )}
             </div>
@@ -476,7 +509,15 @@ function BillingRow({ job, onOpen, onChange }: { job: Job; onOpen: () => void; o
   );
 }
 
-function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: string }) {
+function CheckInForm({
+  onCreated,
+  userId,
+  mode,
+}: {
+  onCreated: () => void;
+  userId?: string;
+  mode: "new" | "returned";
+}) {
   const [plate, setPlate] = useState("");
   const [customer, setCustomer] = useState("");
   const [phone, setPhone] = useState("");
@@ -497,6 +538,13 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
   const [clientSource, setClientSource] = useState<string>("walk_in");
   const [clientSourceDetail, setClientSourceDetail] = useState("");
   const [history, setHistory] = useState<{ count: number; lastJobNo?: string }>({ count: 0 });
+  const [returnVisitType, setReturnVisitType] = useState<ReturnVisitType>("new_problem");
+  const [returnVisitNotes, setReturnVisitNotes] = useState("");
+  const [previousJobs, setPreviousJobs] = useState<ReturnVisitJob[]>([]);
+  const [selectedPreviousJobId, setSelectedPreviousJobId] = useState("");
+  const isReturnedMode = mode === "returned";
+  const normalizedPlate = plate.trim().toUpperCase();
+  const showReturnVisitFields = isReturnedMode && previousJobs.length > 0;
 
   useEffect(() => {
     (async () => {
@@ -510,22 +558,68 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
   }, []);
 
   useEffect(() => {
-    const normalizedPlate = plate.trim().toUpperCase();
     if (normalizedPlate.length < 4) {
       setHistory({ count: 0 });
+      setPreviousJobs([]);
+      setSelectedPreviousJobId("");
+      setReturnVisitType("new_problem");
+      setReturnVisitNotes("");
       return;
     }
     const timeoutId = setTimeout(async () => {
       const { data } = await supabase
         .from("jobs")
-        .select("job_no")
+        .select(`
+          id,
+          job_no,
+          status,
+          customer_name,
+          customer_phone,
+          vehicle_label,
+          reported_problem,
+          complaint,
+          service_type,
+          paint_color_code,
+          has_insurance,
+          insurance_company,
+          insurance_policy_no,
+          lead_source,
+          lead_source_detail,
+          created_at,
+          completed_at
+        `)
         .eq("plate", normalizedPlate)
         .order("created_at", { ascending: false })
         .limit(5);
-      setHistory({ count: data?.length ?? 0, lastJobNo: data?.[0]?.job_no });
+      const rows = (data ?? []) as ReturnVisitJob[];
+      setHistory({ count: rows.length, lastJobNo: rows[0]?.job_no });
+      setPreviousJobs(rows);
+      setSelectedPreviousJobId((current) => {
+        if (current && rows.some((row) => row.id === current)) return current;
+        return rows[0]?.id ?? "";
+      });
+
+      if (!isReturnedMode || rows.length === 0) return;
+
+      const latest = rows[0];
+      const [seedMake, ...seedModelParts] = (latest.vehicle_label ?? "").trim().split(/\s+/).filter(Boolean);
+      const seedModel = seedModelParts.join(" ");
+
+      setCustomer((current) => current || latest.customer_name || "");
+      setPhone((current) => current || latest.customer_phone || "");
+      setMake((current) => current || seedMake || "");
+      setModel((current) => current || seedModel || "");
+      setComplaint((current) => current || latest.reported_problem || latest.complaint || "");
+      setServiceType((current) => current === "mechanical" && latest.service_type ? latest.service_type : current);
+      setPaintCode((current) => current || latest.paint_color_code || "");
+      setHasInsurance((current) => current || Boolean(latest.has_insurance));
+      setInsuranceCompany((current) => current || latest.insurance_company || "");
+      setInsurancePolicy((current) => current || latest.insurance_policy_no || "");
+      setClientSource((current) => current === "walk_in" && latest.lead_source ? latest.lead_source : current);
+      setClientSourceDetail((current) => current || latest.lead_source_detail || "");
     }, 400);
     return () => clearTimeout(timeoutId);
-  }, [plate]);
+  }, [isReturnedMode, normalizedPlate]);
 
   const analysePhotos = async () => {
     const images = VEHICLE_AI_PHOTO_KINDS
@@ -537,7 +631,7 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
     }
     setAiBusy(true);
     try {
-      const { data, error, response } = await supabase.functions.invoke("vehicle-vision", { body: { images } });
+      const { data, error, response } = await invokeEdgeFunction("vehicle-vision", { body: { images } });
       if (error || (data as any)?.error) {
         const message = (data as any)?.error
           ?? await readEdgeFunctionErrorMessage(error, response, "AI failed");
@@ -574,11 +668,15 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
     setInsurancePolicy("");
     setClientSource("walk_in");
     setClientSourceDetail("");
+    setHistory({ count: 0 });
+    setReturnVisitType("new_problem");
+    setReturnVisitNotes("");
+    setPreviousJobs([]);
+    setSelectedPreviousJobId("");
   };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    const normalizedPlate = plate.trim().toUpperCase();
     if (!normalizedPlate) {
       toast.error("Plate is required");
       return;
@@ -677,6 +775,9 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
         insurance_policy_no: hasInsurance ? (insurancePolicy || null) : null,
         lead_source: clientSource || null,
         lead_source_detail: clientSourceDetail || null,
+        previous_job_id: showReturnVisitFields ? (selectedPreviousJobId || null) : null,
+        return_visit_type: showReturnVisitFields ? returnVisitType : null,
+        return_visit_notes: showReturnVisitFields ? (returnVisitNotes.trim() || null) : null,
         status: "diagnosis",
         created_by: userId ?? null,
       }).select("id").single();
@@ -723,9 +824,19 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
 
   return (
     <Card className="max-w-4xl p-6">
-      <h3 className="mb-4 flex items-center gap-2 font-semibold"><Plus className="h-4 w-4 text-primary" />New Check-In</h3>
+      <div className="mb-4 space-y-1">
+        <h3 className="flex items-center gap-2 font-semibold">
+          <Plus className="h-4 w-4 text-primary" />
+          {isReturnedMode ? "Returned Check-In" : "New Check-In"}
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          {isReturnedMode
+            ? "Enter the plate first, link the earlier job, and mark whether the vehicle came back for the same problem, a related problem, or a new problem."
+            : "Create a fresh job card for a new arrival, then proceed with workshop intake."}
+        </p>
+      </div>
 
-      {history.count > 0 && (
+      {history.count > 0 && isReturnedMode && (
         <div className="mb-4 flex items-start gap-2 rounded-md border-2 border-amber-500/40 bg-amber-500/10 p-3 text-sm">
           <History className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <div>
@@ -737,7 +848,39 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
         </div>
       )}
 
+      {history.count > 0 && !isReturnedMode && (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-primary/25 bg-primary/5 p-3 text-sm">
+          <History className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          <div>
+            <p className="font-semibold">This plate already has workshop history.</p>
+            <p className="text-xs text-muted-foreground">
+              If this car is coming back for the same, related, or a new problem, switch to the <strong>Returned Check-In</strong> tab so the jobs stay linked.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {isReturnedMode && normalizedPlate.length >= 4 && previousJobs.length === 0 && (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/5 p-3 text-sm">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <div>
+            <p className="font-semibold">No earlier job found for this plate yet.</p>
+            <p className="text-xs text-muted-foreground">
+              If this is the first visit for this car, use the <strong>New Check-In</strong> tab instead.
+            </p>
+          </div>
+        </div>
+      )}
+
       <form onSubmit={submit} className="grid gap-4 md:grid-cols-2">
+        <div className="md:col-span-2 space-y-2">
+          <Label>Plate number</Label>
+          <div className="flex gap-2">
+            <Input placeholder="KCA 123A" value={plate} onChange={(e) => setPlate(e.target.value)} required />
+            <CameraInput onPick={(file, preview) => setPhotos((current) => ({ ...current, plate: { file, preview } }))} />
+          </div>
+          {photos.plate && <img src={photos.plate.preview} alt="plate" className="mt-1 h-12 rounded" />}
+        </div>
         <div className="space-y-2">
           <Label>Customer name</Label>
           <Input placeholder="Customer name" value={customer} onChange={(e) => setCustomer(e.target.value)} />
@@ -745,14 +888,6 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
         <div className="space-y-2">
           <Label>Phone</Label>
           <Input placeholder="+254 7XX XXX XXX" value={phone} onChange={(e) => setPhone(e.target.value)} />
-        </div>
-        <div className="space-y-2">
-          <Label>Plate number</Label>
-          <div className="flex gap-2">
-            <Input placeholder="KCA 123A" value={plate} onChange={(e) => setPlate(e.target.value)} required />
-            <CameraInput onPick={(file, preview) => setPhotos((current) => ({ ...current, plate: { file, preview } }))} />
-          </div>
-          {photos.plate && <img src={photos.plate.preview} alt="plate" className="mt-1 h-12 rounded" />}
         </div>
         <div className="space-y-2">
           <Label>Make</Label>
@@ -841,6 +976,56 @@ function CheckInForm({ onCreated, userId }: { onCreated: () => void; userId?: st
           <Textarea placeholder="What the customer reported when bringing in the car..." value={complaint} onChange={(e) => setComplaint(e.target.value)} />
         </div>
 
+        {showReturnVisitFields && (
+          <div className="md:col-span-2 space-y-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
+            <div className="flex items-start gap-2">
+              <History className="mt-0.5 h-4 w-4 text-amber-700" />
+              <div>
+                <p className="text-sm font-semibold text-amber-950">Returned car</p>
+                <p className="text-xs text-amber-800">
+                  Choose whether this visit is for the same problem, a related problem, or a new problem before creating the next job card.
+                </p>
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Return type</Label>
+                <Select value={returnVisitType} onValueChange={(value: ReturnVisitType) => setReturnVisitType(value)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="same_problem">Same problem</SelectItem>
+                    <SelectItem value="related_problem">Related problem</SelectItem>
+                    <SelectItem value="new_problem">New problem</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Link to previous job</Label>
+                <Select value={selectedPreviousJobId || "none"} onValueChange={(value) => setSelectedPreviousJobId(value === "none" ? "" : value)}>
+                  <SelectTrigger><SelectValue placeholder="Pick previous job" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Latest linked automatically</SelectItem>
+                    {previousJobs.map((row) => (
+                      <SelectItem key={row.id} value={row.id}>
+                        {row.job_no} - {row.reported_problem ?? row.complaint ?? "No problem recorded"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Return notes</Label>
+              <Textarea
+                rows={2}
+                placeholder="Short note for this return visit, for example what changed since the last job."
+                value={returnVisitNotes}
+                onChange={(e) => setReturnVisitNotes(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="md:col-span-2 space-y-2 rounded-md border bg-muted/30 p-3">
           <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
             <input type="checkbox" checked={hasInsurance} onChange={(e) => setHasInsurance(e.target.checked)} className="h-4 w-4 accent-primary" />
@@ -922,7 +1107,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   onMoveStatus: (s: JobStatus) => void;
 }) {
   const { hasRole, user } = useAuth();
-  const isSuperAdmin = hasRole("super_admin");
+  const canSeePrivateJobPhotos = hasRole("admin") || hasRole("super_admin") || hasRole("manager") || hasRole("director");
   const canApproveFitting = hasRole("mechanic") || hasRole("admin") || hasRole("super_admin") || hasRole("storekeeper") || hasRole("manager") || hasRole("director");
   const isMechanicOnly = hasRole("mechanic") && !(hasRole("admin") || hasRole("super_admin") || hasRole("director") || hasRole("manager") || hasRole("reception") || hasRole("storekeeper"));
   const canSeeFinances = !isMechanicOnly;
@@ -1002,7 +1187,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     ]);
     const { data: mechs } = await supabase.from("mechanics").select("id, name, phone, specialties").eq("active", true).order("name");
     setMechanicsList((mechs ?? []) as any);
-    if (isSuperAdmin) {
+    if (canSeePrivateJobPhotos) {
       const { data: photoRows } = await supabase
         .from("job_card_photos")
         .select("kind, storage_path")
@@ -1083,7 +1268,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       }
     }
   };
-  useEffect(() => { load(); }, [jobId, isSuperAdmin]);
+  useEffect(() => { load(); }, [jobId, canSeePrivateJobPhotos]);
 
   if (!job) return <p className="text-center text-muted-foreground py-8">Loading…</p>;
 
@@ -1161,7 +1346,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     setAiBusy(true);
     try {
         const diagnosticFindings = findings.filter((f: any) => f.status && f.status !== "ok" && !isServiceCategory(f.category));
-        const { data, error, response } = await supabase.functions.invoke("diagnose-summary", {
+        const { data, error, response } = await invokeEdgeFunction("diagnose-summary", {
           body: {
             vehicle: job.vehicle_label ?? "",
             plate: job.plate,
@@ -1917,6 +2102,14 @@ Golden Automotive Solutions`);
                 Linked to previous job <span className="font-mono font-bold text-primary">{previous.job_no}</span> — {previous.complaint ?? "no complaint recorded"} ·{" "}
                 {previous.completed_at ? `completed ${new Date(previous.completed_at).toLocaleDateString()}` : "open"}
               </p>
+              {job.return_visit_type && (
+                <p className="text-xs mt-1">
+                  Return type: <strong>{job.return_visit_type.replaceAll("_", " ")}</strong>
+                </p>
+              )}
+              {job.return_visit_notes && (
+                <p className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap">{job.return_visit_notes}</p>
+              )}
               {previous.paint_color_code && <p className="text-xs">Paint code on file: <strong>{previous.paint_color_code}</strong></p>}
             </div>
           </div>
@@ -1961,6 +2154,12 @@ Golden Automotive Solutions`);
                 <Badge variant="outline" className="capitalize">{STATUS_LABEL[job.status]}</Badge>
               )}
               <Badge variant="secondary"><Clock className="h-3 w-3 mr-1" />{elapsed(job.started_at)}</Badge>
+              {job.return_visit_type && (
+                <Badge variant="secondary" className="capitalize">
+                  <History className="h-3 w-3 mr-1" />
+                  {job.return_visit_type.replaceAll("_", " ")}
+                </Badge>
+              )}
               {job.paint_color_code && <Badge variant="secondary"><Palette className="h-3 w-3 mr-1" />{job.paint_color_code}</Badge>}
               {issueCount > 0 && (
                 <Badge className="bg-destructive text-destructive-foreground">
@@ -2138,7 +2337,7 @@ Golden Automotive Solutions`);
                 </div>
               </div>
             </Card>
-            {isSuperAdmin && jobPhotos.length > 0 && (
+            {canSeePrivateJobPhotos && jobPhotos.length > 0 && (
               <Card className="p-5">
                 <h3 className="font-semibold flex items-center gap-2 mb-3"><ClipboardList className="h-4 w-4 text-primary" />Private intake photos</h3>
                 <div className="grid grid-cols-2 gap-3">

@@ -678,6 +678,8 @@ export type Database = {
           receipt_amount: number
           recommended_parts: Json
           reported_problem: string | null
+          return_visit_notes: string | null
+          return_visit_type: string | null
           requires_internal_parts_approval: boolean
           service_type: string | null
           started_at: string
@@ -740,6 +742,8 @@ export type Database = {
           receipt_amount?: number
           recommended_parts?: Json
           reported_problem?: string | null
+          return_visit_notes?: string | null
+          return_visit_type?: string | null
           requires_internal_parts_approval?: boolean
           service_type?: string | null
           started_at?: string
@@ -802,6 +806,8 @@ export type Database = {
           receipt_amount?: number
           recommended_parts?: Json
           reported_problem?: string | null
+          return_visit_notes?: string | null
+          return_visit_type?: string | null
           requires_internal_parts_approval?: boolean
           service_type?: string | null
           started_at?: string
@@ -1142,6 +1148,7 @@ export type Database = {
       petty_cash_entries: {
         Row: {
           amount: number
+          contact: string | null
           created_at: string
           created_by: string | null
           date: string
@@ -1151,11 +1158,13 @@ export type Database = {
           payee: string | null
           payment_mode: string
           payment_reference: string | null
+          transaction_time: string | null
           transaction_cost: number
           type: string
         }
         Insert: {
           amount?: number
+          contact?: string | null
           created_at?: string
           created_by?: string | null
           date?: string
@@ -1165,11 +1174,13 @@ export type Database = {
           payee?: string | null
           payment_mode?: string
           payment_reference?: string | null
+          transaction_time?: string | null
           transaction_cost?: number
           type?: string
         }
         Update: {
           amount?: number
+          contact?: string | null
           created_at?: string
           created_by?: string | null
           date?: string
@@ -1179,6 +1190,7 @@ export type Database = {
           payee?: string | null
           payment_mode?: string
           payment_reference?: string | null
+          transaction_time?: string | null
           transaction_cost?: number
           type?: string
         }

@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Camera, Image as ImageIcon, X, RotateCcw } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,18 +36,38 @@ export function CameraInput({
   onPick, disabled, size = "icon", variant = "outline", className, label, forceCamera,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const cameraFileRef = useRef<HTMLInputElement>(null);
   const [camOpen, setCamOpen] = useState(false);
+  const isMobile = useIsMobile();
 
   const handleFile = async (file: File) => {
     const dataUrl = await readAsDataUrl(file);
     onPick(file, dataUrl);
   };
 
-  const openCamera = () => setCamOpen(true);
+  const openCamera = () => {
+    if (isMobile) {
+      cameraFileRef.current?.click();
+      return;
+    }
+    setCamOpen(true);
+  };
   const openFiles = () => fileRef.current?.click();
 
   return (
     <>
+      <input
+        ref={cameraFileRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+          e.target.value = "";
+        }}
+      />
       <input
         ref={fileRef}
         type="file"
@@ -101,6 +122,10 @@ export function CameraInput({
       {camOpen && (
         <CameraDialog
           onClose={() => setCamOpen(false)}
+          onFallbackToFiles={() => {
+            setCamOpen(false);
+            openFiles();
+          }}
           onCapture={async (file, dataUrl) => {
             onPick(file, dataUrl);
             setCamOpen(false);
@@ -113,9 +138,11 @@ export function CameraInput({
 
 function CameraDialog({
   onClose,
+  onFallbackToFiles,
   onCapture,
 }: {
   onClose: () => void;
+  onFallbackToFiles: () => void;
   onCapture: (file: File, dataUrl: string) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -144,7 +171,7 @@ function CameraDialog({
         }
       } catch (e: any) {
         setError(e?.message || "Could not access camera");
-        toast.error("Camera unavailable — falling back to file picker");
+        toast.error("Camera unavailable. You can upload a photo instead.");
       }
     })();
     return () => {
@@ -192,7 +219,10 @@ function CameraDialog({
           <div className="text-center text-white/80 p-8">
             <p className="font-semibold mb-2">Camera unavailable</p>
             <p className="text-sm">{error}</p>
-            <Button className="mt-4" variant="secondary" onClick={onClose}>Close</Button>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <Button variant="secondary" onClick={onFallbackToFiles}>Upload photo instead</Button>
+              <Button variant="ghost" className="text-white hover:bg-white/10" onClick={onClose}>Close</Button>
+            </div>
           </div>
         ) : (
           <video ref={videoRef} playsInline muted className="max-h-full max-w-full" />

@@ -3,6 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { CameraInput } from "@/components/CameraInput";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
@@ -10,11 +11,13 @@ import {
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight, RefreshCw, Plus } from "lucide-react";
+import { Search, AlertTriangle, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight, RefreshCw, Plus, Sparkles, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth";
 import { canSeeCostPrices } from "@/lib/permissions";
 import { toast } from "@/hooks/use-toast";
+import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { invokeEdgeFunction } from "@/lib/invoke-edge";
 
 type Location = { id: string; name: string; kind: string };
 type Part = { id: string; sku: string; name: string; unit_cost: number; unit_price: number; min_stock: number; category: string | null };
@@ -32,6 +35,17 @@ type Row = Part & {
 };
 
 type MovementType = "restock" | "sale" | "transfer_out";
+type StockAiSuggestion = {
+  name?: string;
+  sku?: string;
+  category?: string;
+  qty?: number;
+  unit_cost?: number;
+  unit_price?: number;
+  min_stock?: number;
+  notes?: string;
+  confidence?: number;
+};
 
 export default function Stock() {
   const { user, hasRole } = useAuth();
@@ -122,17 +136,38 @@ export default function Stock() {
             Daily stock card · opening, additional, total, sales & closing — per location
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {canEdit && (
-            <Button size="sm" className="bg-gradient-primary" onClick={() => setAddPartOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" /> Add Stock
-            </Button>
+            <>
+              <Button size="sm" variant="outline" onClick={() => setAddPartOpen(true)}>
+                <Sparkles className="h-4 w-4 mr-2" /> Upload with AI
+              </Button>
+              <Button size="sm" className="bg-gradient-primary" onClick={() => setAddPartOpen(true)}>
+                <Plus className="h-4 w-4 mr-2" /> Add Stock
+              </Button>
+            </>
           )}
           <Button variant="outline" size="sm" onClick={loadAll} disabled={loading}>
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
         </div>
       </div>
+
+      {canEdit && (
+        <Card className="border-dashed bg-muted/20 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-medium">Upload with AI</p>
+              <p className="text-xs text-muted-foreground">
+                Capture a part, label, shelf tag, or receipt and we’ll prefill the stock form for you.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setAddPartOpen(true)}>
+              <Sparkles className="h-4 w-4 mr-2" /> Open AI stock scan
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* Location switcher */}
       <Tabs value={activeLoc} onValueChange={setActiveLoc}>
@@ -274,6 +309,46 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
   const [minStock, setMinStock] = useState("0");
   const [openingQty, setOpeningQty] = useState("0");
   const [busy, setBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiPreview, setAiPreview] = useState("");
+  const [aiNotes, setAiNotes] = useState("");
+  const [aiSuggestion, setAiSuggestion] = useState<StockAiSuggestion | null>(null);
+
+  const analyseWithAi = async () => {
+    if (!aiPreview && !aiNotes.trim()) {
+      toast({ title: "Add a photo or notes first", variant: "destructive" });
+      return;
+    }
+
+    setAiBusy(true);
+    try {
+      const { data, error, response } = await invokeEdgeFunction<StockAiSuggestion>("stock-intake-ai", {
+        body: {
+          images: aiPreview ? [aiPreview] : [],
+          text: aiNotes.trim(),
+        },
+      });
+      if (error || (data as any)?.error) {
+        const message = (data as any)?.error
+          ?? await readEdgeFunctionErrorMessage(error, response, "AI scan failed.");
+        toast({ title: "AI scan failed", description: message, variant: "destructive" });
+        return;
+      }
+
+      const suggestion = data ?? {};
+      setAiSuggestion(suggestion);
+      if (suggestion.name) setName(suggestion.name);
+      if (suggestion.sku) setSku(suggestion.sku);
+      if (suggestion.category) setCategory(suggestion.category);
+      if (Number(suggestion.unit_cost || 0) > 0) setUnitCost(String(suggestion.unit_cost));
+      if (Number(suggestion.unit_price || 0) > 0) setUnitPrice(String(suggestion.unit_price));
+      if (suggestion.min_stock != null) setMinStock(String(suggestion.min_stock));
+      if (Number(suggestion.qty || 0) > 0) setOpeningQty(String(suggestion.qty));
+      toast({ title: "AI fields filled", description: "Review the values before saving." });
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   const submit = async () => {
     if (!name.trim() || !sku.trim()) {
@@ -321,12 +396,58 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Add new part / stock</DialogTitle>
           <DialogDescription>Register a new part and its opening quantity at this location.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 py-2">
+          <div className="rounded-md border bg-muted/20 p-3 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium">Fill with AI</p>
+                <p className="text-xs text-muted-foreground">Capture a part, label, shelf tag, or receipt and we'll prefill the stock row.</p>
+              </div>
+              <Button type="button" size="sm" variant="outline" onClick={analyseWithAi} disabled={aiBusy}>
+                {aiBusy ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-2" />}
+                {aiBusy ? "Scanning..." : "Scan with AI"}
+              </Button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-[120px,1fr]">
+              <div className="space-y-2">
+                <Label>Photo</Label>
+                <div className="flex flex-col gap-2">
+                  <CameraInput
+                    size="sm"
+                    label="Add photo"
+                    onPick={(_, preview) => setAiPreview(preview)}
+                  />
+                  {aiPreview ? (
+                    <img src={aiPreview} alt="Stock scan preview" className="h-24 w-full rounded-md border object-cover" />
+                  ) : (
+                    <div className="flex h-24 items-center justify-center rounded-md border border-dashed text-[11px] text-muted-foreground">
+                      No photo yet
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Extra notes (optional)</Label>
+                <Textarea
+                  rows={4}
+                  value={aiNotes}
+                  onChange={(e) => setAiNotes(e.target.value)}
+                  placeholder="Optional hint, for example supplier name, receipt note, or what item you want extracted."
+                />
+                {aiSuggestion?.notes && (
+                  <p className="text-xs text-muted-foreground">
+                    AI note: {aiSuggestion.notes}
+                    {typeof aiSuggestion.confidence === "number" ? ` · confidence ${Math.round(aiSuggestion.confidence * 100)}%` : ""}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div><Label>Part name</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="Brake pad - front" /></div>
             <div><Label>SKU</Label><Input value={sku} onChange={e => setSku(e.target.value)} placeholder="BP-F-001" /></div>

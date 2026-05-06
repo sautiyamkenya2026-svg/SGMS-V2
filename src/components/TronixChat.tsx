@@ -9,6 +9,7 @@ import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { CameraInput } from "@/components/CameraInput";
 import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { invokeEdgeFunction } from "@/lib/invoke-edge";
 
 type Msg = {
   role: "user" | "assistant";
@@ -27,7 +28,7 @@ const MAX_IMAGE_COUNT = 6;
 
 const WELCOME_MESSAGE: Msg = {
   role: "assistant",
-  content: "Hi, I'm **Tronix**. I can help with the garage, but I'm also open for general questions about technology, science, writing, planning, and everyday problem-solving.",
+  content: "Hi, I'm **Tronix**. Ask me anything. I can help with garage work, and I can also chat normally about everyday topics.",
 };
 
 const readAsDataUrl = (file: File) =>
@@ -173,9 +174,18 @@ export function TronixChat({ fullPage = false, className }: Props) {
     setLoading(true);
 
     try {
-      const { data, error, response } = await supabase.functions.invoke("tronix", {
+      const contextMessages = [...messages, userMsg]
+        .filter((message) => message.content !== WELCOME_MESSAGE.content)
+        .filter((message) => !(message.role === "assistant" && message.content.startsWith("I hit a snag:")))
+        .slice(-12)
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
+        }));
+
+      const { data, error, response } = await invokeEdgeFunction("tronix", {
         body: {
-          messages: [{ role: "user", content: userText }],
+          messages: contextMessages,
           images: sentImages,
         },
       });

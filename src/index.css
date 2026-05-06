@@ -108,11 +108,16 @@
   * {
     @apply border-border;
   }
+  html {
+    min-height: 100%;
+    -webkit-text-size-adjust: 100%;
+  }
   body {
     @apply bg-background text-foreground;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
     font-feature-settings: "cv11", "ss01";
     min-height: 100dvh;
+    overflow-x: hidden;
   }
   h1, h2, h3 { font-family: 'Playfair Display', Georgia, serif; }
 }
