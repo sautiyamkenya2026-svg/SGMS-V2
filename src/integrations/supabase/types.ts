@@ -728,6 +728,7 @@ export type Database = {
           return_visit_type: string | null
           requires_internal_parts_approval: boolean
           service_type: string | null
+          service_types: string[]
           started_at: string
           status: string
           updated_at: string
@@ -794,6 +795,7 @@ export type Database = {
           return_visit_type?: string | null
           requires_internal_parts_approval?: boolean
           service_type?: string | null
+          service_types?: string[]
           started_at?: string
           status?: string
           updated_at?: string
@@ -860,6 +862,7 @@ export type Database = {
           return_visit_type?: string | null
           requires_internal_parts_approval?: boolean
           service_type?: string | null
+          service_types?: string[]
           started_at?: string
           status?: string
           updated_at?: string

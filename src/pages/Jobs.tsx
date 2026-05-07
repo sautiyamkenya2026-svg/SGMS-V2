@@ -33,6 +33,16 @@ import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
+import {
+  DEFAULT_SERVICE_TYPE,
+  SERVICE_TYPE_OPTIONS,
+  type ServiceTypeValue,
+  formatServiceTypes,
+  getServiceTypes,
+  primaryServiceType,
+  serviceTypeIncludes,
+  serviceTypeLabel,
+} from "@/lib/service-types";
 
 type JobStatus = "diagnosis" | "diagnosed" | "diagnosis_approval" | "parts" | "parts_approval" | "repair" | "awaiting_approval" | "completed" | "closed";
 
@@ -99,6 +109,7 @@ interface Job {
   estimate: number;
   status: JobStatus;
   service_type: string | null;
+  service_types: string[] | null;
   paint_color_code: string | null;
   previous_job_id: string | null;
   customer_feedback: string | null;
@@ -198,6 +209,7 @@ type ReturnVisitJob = {
   complaint: string | null;
   fuel_type: string | null;
   service_type: string | null;
+  service_types: string[] | null;
   paint_color_code: string | null;
   vehicle_color: string | null;
   has_insurance: boolean;
@@ -562,7 +574,7 @@ function CheckInForm({
   const [assignedMechId, setAssignedMechId] = useState("");
   const [mechRoster, setMechRoster] = useState<Array<{ id: string; name: string; specialties: string[]; level: string }>>([]);
   const [complaint, setComplaint] = useState("");
-  const [serviceType, setServiceType] = useState<string>("mechanical");
+  const [serviceTypes, setServiceTypes] = useState<ServiceTypeValue[]>([DEFAULT_SERVICE_TYPE]);
   const [fuelType, setFuelType] = useState<"petrol" | "diesel" | "unknown">("unknown");
   const [vehicleColor, setVehicleColor] = useState("");
   const [paintCode, setPaintCode] = useState("");
@@ -585,6 +597,16 @@ function CheckInForm({
   const showReturnVisitFields = isReturnedMode && previousJobs.length > 0;
   const selectedPreviousJob = previousJobs.find((row) => row.id === selectedPreviousJobId) ?? previousJobs[0] ?? null;
   const needsFreshComplaint = showReturnVisitFields && returnVisitType !== "same_problem";
+  const selectedPrimaryServiceType = serviceTypes[0] ?? DEFAULT_SERVICE_TYPE;
+
+  const toggleServiceType = (value: ServiceTypeValue) => {
+    setServiceTypes((current) => {
+      if (current.includes(value)) {
+        return current.length === 1 ? current : current.filter((item) => item !== value);
+      }
+      return [...current, value];
+    });
+  };
 
   useEffect(() => {
     (async () => {
@@ -620,6 +642,7 @@ function CheckInForm({
           complaint,
           fuel_type,
           service_type,
+          service_types,
           paint_color_code,
           vehicle_color,
           has_insurance,
@@ -654,7 +677,11 @@ function CheckInForm({
       setComplaint((current) => current || latest.reported_problem || latest.complaint || "");
       setFuelType((current) => current === "unknown" && latest.fuel_type ? latest.fuel_type as "petrol" | "diesel" | "unknown" : current);
       setVehicleColor((current) => current || latest.vehicle_color || "");
-      setServiceType((current) => current === "mechanical" && latest.service_type ? latest.service_type : current);
+      setServiceTypes((current) => {
+        const isDefaultOnly = current.length === 1 && current[0] === DEFAULT_SERVICE_TYPE;
+        if (!isDefaultOnly) return current;
+        return getServiceTypes(latest.service_types, latest.service_type);
+      });
       setPaintCode((current) => current || latest.paint_color_code || "");
       setHasInsurance((current) => current || Boolean(latest.has_insurance));
       setInsuranceCompany((current) => current || latest.insurance_company || "");
@@ -704,7 +731,7 @@ function CheckInForm({
     setModel("");
     setAssignedMechId("");
     setComplaint("");
-    setServiceType("mechanical");
+    setServiceTypes([DEFAULT_SERVICE_TYPE]);
     setFuelType("unknown");
     setVehicleColor("");
     setPaintCode("");
@@ -765,10 +792,14 @@ function CheckInForm({
       ? fuelType
       : ((previousJob?.fuel_type as "petrol" | "diesel" | "unknown" | null) ?? "unknown");
     const resolvedVehicleColor = (vehicleColor.trim() || aiResult?.color || previousJob?.vehicle_color || "").trim();
-    const resolvedServiceType = isReturnedMode && serviceType === "mechanical" && previousJob?.service_type
-      ? previousJob.service_type
-      : serviceType;
-    const resolvedPaintCode = resolvedServiceType === "body"
+    const resolvedServiceTypes = isReturnedMode
+      && serviceTypes.length === 1
+      && serviceTypes[0] === DEFAULT_SERVICE_TYPE
+      && (previousJob?.service_types?.length || previousJob?.service_type)
+        ? getServiceTypes(previousJob?.service_types, previousJob?.service_type)
+        : getServiceTypes(serviceTypes);
+    const resolvedServiceType = primaryServiceType(resolvedServiceTypes);
+    const resolvedPaintCode = serviceTypeIncludes(resolvedServiceTypes, resolvedServiceType, "body")
       ? (paintCode || previousJob?.paint_color_code || null)
       : null;
     const resolvedHasInsurance = hasInsurance || Boolean(previousJob?.has_insurance);
@@ -868,6 +899,7 @@ function CheckInForm({
         reported_problem: resolvedComplaint || null,
         fuel_type: resolvedFuelType !== "unknown" ? resolvedFuelType : existingVehicleFuel ?? null,
         service_type: resolvedServiceType,
+        service_types: resolvedServiceTypes,
         paint_color_code: resolvedPaintCode,
         vehicle_color: resolvedVehicleColor || existingVehicleColor || null,
         estimate: 0,
@@ -1022,7 +1054,7 @@ function CheckInForm({
               </div>
               <div>
                 <p className="text-xs uppercase text-muted-foreground">Service type on file</p>
-                <p>{selectedPreviousJob.service_type ?? "Not set"}</p>
+                <p>{formatServiceTypes(selectedPreviousJob.service_types, selectedPreviousJob.service_type)}</p>
               </div>
             </div>
           </div>
@@ -1078,22 +1110,36 @@ function CheckInForm({
               </datalist>
               {make.toLowerCase() === "mazda" && <p className="text-[11px] text-muted-foreground">Mazda-friendly: pick a Mazda model from the dropdown.</p>}
             </div>
-            <div className="space-y-2">
-              <Label>Service type</Label>
-              <Select value={serviceType} onValueChange={setServiceType}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="mechanical">Mechanical</SelectItem>
-                  <SelectItem value="service">Service</SelectItem>
-                  <SelectItem value="electrical">Electrical</SelectItem>
-                  <SelectItem value="general_checkup">General Check-up</SelectItem>
-                  <SelectItem value="body">Body / Paint</SelectItem>
-                  <SelectItem value="diagnosis">Diagnosis only</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
           </>
         )}
+        <div className="space-y-2 md:col-span-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label>Service types</Label>
+            <span className="text-[11px] text-muted-foreground">Primary: {serviceTypeLabel(selectedPrimaryServiceType)}</span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {SERVICE_TYPE_OPTIONS.map((option) => {
+              const checked = serviceTypes.includes(option.value);
+              return (
+                <label
+                  key={option.value}
+                  className={`flex cursor-pointer items-center gap-3 rounded-md border p-3 text-sm transition-colors ${checked ? "border-primary bg-primary/5" : "bg-muted/20"}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleServiceType(option.value)}
+                    className="h-4 w-4 accent-primary"
+                  />
+                  <span>{option.label}</span>
+                </label>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Pick one or many service types during check-in. The first selected type stays as the primary one for older screens and documents.
+          </p>
+        </div>
         <div className="space-y-2">
           <Label>Fuel type</Label>
           <Select value={fuelType} onValueChange={(value: "petrol" | "diesel" | "unknown") => setFuelType(value)}>
@@ -1130,7 +1176,7 @@ function CheckInForm({
             </SelectContent>
           </Select>
         </div>
-        {!isReturnedMode && serviceType === "body" ? (
+        {serviceTypes.includes("body") ? (
           <div className="space-y-2">
             <Label className="flex items-center gap-1"><Palette className="h-3 w-3" />Paint colour code</Label>
             <Input placeholder="e.g. 1G3 (Toyota Magnetic Gray)" value={paintCode} onChange={(e) => setPaintCode(e.target.value)} />

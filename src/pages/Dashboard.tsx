@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, Search, Calendar, Activity, UserX, Timer, CarFront, Cog, Fuel, CircleDollarSign, PackageX } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { formatServiceTypes } from "@/lib/service-types";
 
 const typeStyles: Record<string, string> = {
   success: "bg-success",
@@ -32,7 +33,7 @@ export default function Dashboard() {
     (async () => {
       const today = new Date().toISOString().slice(0,10);
       const [jobsRes, partsRes, stockRes, invRes, recentRes] = await Promise.all([
-        supabase.from("jobs").select("id,status,plate,customer_name,service_type,created_at,job_no").order("created_at", { ascending: false }),
+        supabase.from("jobs").select("id,status,plate,customer_name,service_type,service_types,created_at,job_no").order("created_at", { ascending: false }),
         supabase.from("parts").select("id,min_stock"),
         supabase.from("part_stock").select("part_id,qty"),
         supabase.from("invoices").select("amount,date").eq("date", today),
@@ -62,7 +63,9 @@ export default function Dashboard() {
         id: j.id,
         plate: j.plate ?? "—",
         customer: j.customer_name ?? "—",
-        service: j.service_type ?? j.status,
+        service: ((j as any).service_types?.length || j.service_type)
+          ? formatServiceTypes((j as any).service_types, j.service_type)
+          : j.status,
         time: new Date(j.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       })));
 

@@ -29,6 +29,14 @@ interface JobLookup {
 
 const fmt = (n: number) => `KSh ${Math.round(n).toLocaleString()}`;
 const dayKey = (iso: string) => new Date(iso).toISOString().slice(0, 10);
+const PAYMENT_MODE_LABELS: Record<string, string> = {
+  cash: "Cash",
+  mpesa: "M-PESA",
+  bank: "Bank transfer",
+  card: "Card",
+  cheque: "Cheque",
+  unspecified: "Unspecified",
+};
 const netInvoiceAmount = (invoice: { amount?: number; discount?: number }) =>
   Math.max(0, Number(invoice.amount || 0) - Number(invoice.discount || 0));
 const invoiceOutstandingAmount = (invoice: { doc_type?: string; amount?: number; amount_paid?: number; discount?: number }) =>
@@ -43,6 +51,14 @@ const sumCollectedPayments = (documents: Array<{ doc_type?: string; amount_paid?
       ? sum + Number(doc.amount_paid || 0)
       : sum
   ), 0);
+const normalizePaymentMode = (value: string | null | undefined) => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized || "unspecified";
+};
+const paymentModeLabel = (value: string | null | undefined) =>
+  PAYMENT_MODE_LABELS[normalizePaymentMode(value)] ?? "Unspecified";
+const isCollectedPaymentDocument = (doc: { doc_type?: string | null }) =>
+  doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice";
 
 export default function Reports() {
   return (
@@ -84,7 +100,7 @@ function FinancialTab() {
       const sinceIso = new Date(Date.now() - 21 * 24 * 3600 * 1000).toISOString();
       const sinceDay = sinceIso.slice(0, 10);
       const [{ data: docRows }, { data: mv }, { data: pc }] = await Promise.all([
-        supabase.from("invoices").select("id, job_id, plate, invoice_no, doc_type, amount, amount_paid, date, updated_at, created_at, discount").limit(1000),
+        supabase.from("invoices").select("id, job_id, plate, invoice_no, doc_type, amount, amount_paid, payment_mode, date, updated_at, created_at, discount").limit(1000),
         supabase.from("stock_movements").select("id, reference, created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", sinceIso).eq("type", "sale"),
         supabase.from("petty_cash_entries").select("date, amount, transaction_cost, type").gte("date", sinceDay),
       ]);
@@ -97,6 +113,7 @@ function FinancialTab() {
 
   const { chart, totals } = useMemo(() => {
     const map = new Map<string, { day: string; parts: number; billed: number; collected: number }>();
+    const paymentModeMap = new Map<string, { key: string; label: string; amount: number; count: number }>();
     const days: string[] = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(Date.now() - i * 24 * 3600 * 1000).toISOString().slice(0, 10);
@@ -119,13 +136,28 @@ function FinancialTab() {
       partsCost += cost;
     }
     for (const doc of documents) {
+      if (isCollectedPaymentDocument(doc)) {
+        const received = Number(doc.amount_paid || 0);
+        if (received > 0) {
+          const key = normalizePaymentMode(doc.payment_mode);
+          const current = paymentModeMap.get(key) ?? {
+            key,
+            label: paymentModeLabel(doc.payment_mode),
+            amount: 0,
+            count: 0,
+          };
+          current.amount += received;
+          current.count += 1;
+          paymentModeMap.set(key, current);
+        }
+      }
       const stamp = doc.updated_at ?? doc.date;
       if (!stamp) continue;
       const d = dayKey(stamp);
       const row = map.get(d);
       if (!row) continue;
       const invoiceAmount = doc.doc_type === "invoice" ? netInvoiceAmount(doc) : 0;
-      const received = doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice"
+      const received = isCollectedPaymentDocument(doc)
         ? Number(doc.amount_paid || 0)
         : 0;
       row.billed += invoiceAmount;
@@ -138,6 +170,7 @@ function FinancialTab() {
     }
     const finalInvoices = documents.filter((doc) => doc.doc_type === "invoice");
     const chart = days.map(d => map.get(d)!);
+    const paymentModes = Array.from(paymentModeMap.values()).sort((a, b) => b.amount - a.amount);
     return {
       chart,
       totals: {
@@ -150,6 +183,7 @@ function FinancialTab() {
         partsRevenue,
         partsCost,
         pettyOut,
+        paymentModes,
       },
     };
   }, [documents, movements, petty]);
@@ -201,6 +235,29 @@ function FinancialTab() {
             </BarChart>
           </ResponsiveContainer>
         </div>
+      </Card>
+
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-semibold">Payments by method</h3>
+            <p className="text-xs text-muted-foreground">Collected money split by the payment mode saved on deposit invoices and receipts.</p>
+          </div>
+          <Badge variant="outline">{totals.paymentModes.length} method{totals.paymentModes.length === 1 ? "" : "s"}</Badge>
+        </div>
+        {totals.paymentModes.length === 0 ? (
+          <p className="mt-4 text-sm text-muted-foreground">No recorded payments yet.</p>
+        ) : (
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {totals.paymentModes.map((mode) => (
+              <div key={mode.key} className="rounded-md border bg-muted/20 p-4">
+                <p className="text-xs uppercase text-muted-foreground">{mode.label}</p>
+                <p className="mt-1 text-2xl font-bold">{fmt(mode.amount)}</p>
+                <p className="text-[11px] text-muted-foreground">{mode.count} payment entr{mode.count === 1 ? "y" : "ies"}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -682,6 +739,12 @@ function JobReport({ report }: { report: JobLookup }) {
             <ul className="space-y-2 text-sm">
               {invoices.map(i => (
                 <li key={i.id} className="flex flex-col gap-1 rounded bg-muted/40 p-2 sm:flex-row sm:items-center sm:justify-between">
+                  {(i.amount_paid || i.payment_reference) ? (
+                    <span className="text-xs text-muted-foreground sm:order-3 sm:w-full">
+                      Paid via {paymentModeLabel(i.payment_mode)}
+                      {i.payment_reference ? ` · ${i.payment_reference}` : ""}
+                    </span>
+                  ) : null}
                   <span>{i.doc_type ?? "invoice"} · {i.invoice_no ?? i.id.slice(0, 8)}</span>
                   <span>KSh {Number(i.amount).toLocaleString()} · paid {Number(i.amount_paid).toLocaleString()}</span>
                 </li>
@@ -699,6 +762,12 @@ function JobReport({ report }: { report: JobLookup }) {
             <ul className="space-y-2 text-sm">
               {petty.map(e => (
                 <li key={e.id} className="flex flex-col gap-1 rounded bg-muted/40 p-2 sm:flex-row sm:items-center sm:justify-between">
+                  {(e.payment_mode || e.payment_reference) ? (
+                    <span className="text-xs text-muted-foreground sm:order-3 sm:w-full">
+                      {paymentModeLabel(e.payment_mode)}
+                      {e.payment_reference ? ` · ${e.payment_reference}` : ""}
+                    </span>
+                  ) : null}
                   <span>{e.payee ?? e.details ?? e.type}</span>
                   <span>KSh {Number(e.amount).toLocaleString()}</span>
                 </li>
