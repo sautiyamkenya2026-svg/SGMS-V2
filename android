@@ -1,0 +1,214 @@
+# Validated Android Studio Web App Wrapper
+
+This repo now includes a real Android project at `GoldenAutomotiveWebApp/`.
+
+Use that folder as the canonical Android source.
+Do not rebuild the app from the old pasted snippets by hand unless you are intentionally porting it somewhere else.
+
+## Validation status
+
+Validated on **May 7, 2026** on this machine by running:
+
+```powershell
+cd GoldenAutomotiveWebApp
+.\gradlew.bat assembleDebug
+```
+
+Result:
+- Gradle sync/build path is working
+- `assembleDebug` completed successfully
+- output APK is created under `GoldenAutomotiveWebApp/app/build/outputs/apk/debug/`
+
+## Open this in Android Studio
+
+Open:
+
+```text
+GoldenAutomotiveWebApp/
+```
+
+Use:
+- Android Gradle Plugin `8.6.1`
+- Gradle `8.7`
+- JDK `17`
+
+Important:
+- On this machine, the system Java is `26.0.1`
+- For Android Studio, set **Gradle JDK** to the **Embedded JDK** or another **JDK 17**
+- Do not point this project at Java 26
+
+## What this wrapper covers
+
+- login/session persistence in `WebView`
+- camera upload from file inputs
+- `getUserMedia()` camera and microphone permission handling
+- file chooser support including multiple file selection
+- PDF/CSV/blob downloads
+- passkeys / WebAuthn in WebView
+- deep links for `/approve/...`
+- pull to refresh
+- back button navigation
+
+## Known limitation
+
+This web app's OBD flow in `src/components/InspectionWizard.tsx` uses Web Bluetooth and Web Serial.
+
+A normal Android WebView is not the right place to depend on those advanced hardware web APIs.
+
+Covered in this wrapper:
+- camera
+- downloads
+- approvals
+- login
+- passkeys
+- invoices
+- PDFs
+- attendance
+- normal web app flows
+
+Not covered in a reliable way inside plain WebView:
+- OBD BLE / USB scanner flow
+
+If you want the OBD scanner to work inside Android too, build a native BLE / USB bridge as a second step.
+
+## Canonical Android project files
+
+```text
+GoldenAutomotiveWebApp/
+  settings.gradle.kts
+  build.gradle.kts
+  gradle.properties
+  gradlew
+  gradlew.bat
+  gradle/wrapper/gradle-wrapper.jar
+  gradle/wrapper/gradle-wrapper.properties
+  app/
+    build.gradle.kts
+    proguard-rules.pro
+    src/main/AndroidManifest.xml
+    src/main/java/com/goldenautomotive/sgms/MainActivity.kt
+    src/main/res/layout/activity_main.xml
+    src/main/res/values/strings.xml
+    src/main/res/values/colors.xml
+    src/main/res/values/themes.xml
+    src/main/res/xml/file_paths.xml
+    src/main/res/drawable/ic_launcher_foreground.xml
+    src/main/res/drawable/ic_launcher_monochrome.xml
+    src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+    src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+```
+
+## Why this version is safe to use
+
+These issues from the earlier draft have already been handled:
+
+- the project now pins **AGP `8.6.1`**, which supports `compileSdk = 35`
+- the Gradle wrapper is pinned to **Gradle `8.7`**
+- `gradle.properties` is included
+- `proguard-rules.pro` is included
+- launcher icon resources are included
+- the base site URL is configured in one place in `app/build.gradle.kts`
+- the manifest host is derived from that URL through a manifest placeholder
+- the Kotlin compile errors found during a real build were fixed
+
+## Replace before shipping
+
+Edit only this line in:
+
+```text
+GoldenAutomotiveWebApp/app/build.gradle.kts
+```
+
+Replace:
+
+```kotlin
+val appBaseUrl = "https://your-live-site.com"
+```
+
+With your real production origin, for example:
+
+```kotlin
+val appBaseUrl = "https://app.example.com"
+```
+
+Use the root origin only:
+- good: `https://app.example.com`
+- avoid: `https://app.example.com/some/path`
+
+The deep link host is derived automatically from that URL, so you do not need to edit the manifest separately anymore.
+
+## Package name used
+
+```text
+com.goldenautomotive.sgms
+```
+
+## Debug signing fingerprint from this machine
+
+```text
+CD:D1:93:47:81:78:01:A3:8C:D9:63:2C:79:4E:6A:71:CE:23:A7:29:E1:08:BD:BC:BC:F5:85:D2:07:5A:02:2D
+```
+
+## Website file for passkeys / app association
+
+Publish this file at:
+
+```text
+https://your-live-site.com/.well-known/assetlinks.json
+```
+
+Content:
+
+```json
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.goldenautomotive.sgms",
+      "sha256_cert_fingerprints": [
+        "CD:D1:93:47:81:78:01:A3:8C:D9:63:2C:79:4E:6A:71:CE:23:A7:29:E1:08:BD:BC:BC:F5:85:D2:07:5A:02:2D"
+      ]
+    }
+  }
+]
+```
+
+Important:
+- this fingerprint is the **debug** certificate from this machine
+- if you sign the release app with a different key, update `assetlinks.json` to the **release** certificate fingerprint before production rollout
+
+## How to build
+
+Command line:
+
+```powershell
+cd GoldenAutomotiveWebApp
+.\gradlew.bat assembleDebug
+```
+
+Android Studio:
+1. Open `GoldenAutomotiveWebApp`
+2. Confirm Gradle JDK is **Embedded JDK** or **JDK 17**
+3. Sync
+4. Build or Run
+
+## Files in the web app this wrapper was tailored against
+
+- `src/components/CameraInput.tsx`
+- `src/components/BiometricGate.tsx`
+- `src/pages/Attendance.tsx`
+- `src/lib/pdf-templates.ts`
+- `src/lib/document-storage.ts`
+- `src/pages/Invoices.tsx`
+- `src/pages/Jobs.tsx`
+- `src/App.tsx`
+
+## Next optional steps
+
+- add `public/.well-known/assetlinks.json` directly in this repo
+- replace the placeholder site URL in `GoldenAutomotiveWebApp/app/build.gradle.kts`
+- add a native BLE / USB bridge if Android must support the OBD scanner flow
