@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Search, Package, Plus } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { buildIdempotencyFingerprint, clearIdempotencyRequestId, getIdempotencyRequestId } from "@/lib/idempotency";
 
 type Part = { id: string; sku: string; name: string; category: string | null; unit_price: number };
 
@@ -61,17 +62,27 @@ export function RequestPartDialog({
     if (!item_name) { toast.error("Pick a part or enter a custom name"); return; }
     const q = Number(qty);
     if (!q || q < 1) { toast.error("Quantity must be at least 1"); return; }
+    const requestFingerprint = buildIdempotencyFingerprint([
+      jobId,
+      item_name,
+      q,
+      notes,
+      customMode ? "custom" : selected?.id ?? "",
+    ]);
+    const requestId = getIdempotencyRequestId("part-request-dialog", requestFingerprint);
     setSubmitting(true);
-    const { error } = await supabase.from("part_requests").insert({
+    const { error } = await supabase.from("part_requests").upsert({
       job_id: jobId,
       kind: "part",
       item_name,
       qty: q,
       notes: notes || (jobLabel ? `For ${jobLabel}` : null),
       status: "pending",
-    } as any);
+      client_request_id: requestId,
+    } as any, { onConflict: "client_request_id" });
     setSubmitting(false);
     if (error) { toast.error(error.message); return; }
+    clearIdempotencyRequestId("part-request-dialog", requestFingerprint);
     toast.success("Part request sent to reception");
     onOpenChange(false);
     onCreated?.();

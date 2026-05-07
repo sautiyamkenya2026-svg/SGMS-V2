@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
-import { clientPortalEmailFromPlate, looksLikeEmail } from "@/lib/client-portal";
+import { clientPortalEmailFromPlate, clientPortalPasswordFromPhone, looksLikeEmail } from "@/lib/client-portal";
 
 export type Role = "super_admin" | "admin" | "director" | "manager" | "reception" | "mechanic" | "storekeeper" | "gateman" | "client";
 
@@ -72,8 +72,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const identifier = looksLikeEmail(email) ? email.trim() : clientPortalEmailFromPlate(email);
-    const { error } = await supabase.auth.signInWithPassword({ email: identifier, password });
+    const isEmail = looksLikeEmail(email);
+    const identifier = isEmail ? email.trim() : clientPortalEmailFromPlate(email);
+    const secret = isEmail ? password : clientPortalPasswordFromPhone(password, email);
+    const { error } = await supabase.auth.signInWithPassword({ email: identifier, password: secret });
     return { error: error?.message ?? null };
   };
 

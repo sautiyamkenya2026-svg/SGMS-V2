@@ -21,13 +21,22 @@ function normalizePlate(value = "") {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+function normalizeClientPhone(value: string | null | undefined) {
+  const digits = String(value ?? "").replace(/\D+/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("254") && digits.length === 12) return `0${digits.slice(3)}`;
+  if ((digits.startsWith("7") || digits.startsWith("1")) && digits.length === 9) return `0${digits}`;
+  if (digits.startsWith("0") && digits.length === 10) return digits;
+  return digits;
+}
+
 function clientPortalEmail(plate: string) {
   return `${normalizePlate(plate).toLowerCase()}@client.goldenauto.local`;
 }
 
 function clientPortalPassword(phone: string | null | undefined, plate: string) {
-  const compactPhone = String(phone ?? "").trim().replace(/\s+/g, "");
-  return (compactPhone || normalizePlate(plate)).slice(0, 72);
+  const normalizedPhone = normalizeClientPhone(phone);
+  return (normalizedPhone || normalizePlate(plate)).slice(0, 72);
 }
 
 Deno.serve(async (req) => {

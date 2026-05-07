@@ -33,6 +33,8 @@ import { isEdgeFunctionUnavailable, readEdgeFunctionErrorMessage } from "@/lib/e
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
+import { buildIdempotencyFingerprint, clearIdempotencyRequestId, getIdempotencyRequestId } from "@/lib/idempotency";
+import { normalizePlateUsername } from "@/lib/client-portal";
 import {
   DEFAULT_SERVICE_TYPE,
   SERVICE_TYPE_OPTIONS,
@@ -221,6 +223,26 @@ type ReturnVisitJob = {
   completed_at: string | null;
 };
 
+type CheckInPrefillSeed = {
+  plate: string;
+  customer: string;
+  phone: string;
+  make: string;
+  model: string;
+  assignedMechId: string;
+  complaint: string;
+  serviceTypes: ServiceTypeValue[];
+  fuelType: "petrol" | "diesel" | "unknown";
+  vehicleColor: string;
+  paintCode: string;
+  hasInsurance: boolean;
+  insuranceCompany: string;
+  insurancePolicy: string;
+  clientSource: string;
+  clientSourceDetail: string;
+  selectedPreviousJobId?: string;
+};
+
 const JOB_CARD_PHOTO_LABELS: Record<JobCardPhotoKind, string> = {
   plate: "Plate",
   front: "Front",
@@ -316,6 +338,7 @@ export default function Jobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [openJob, setOpenJob] = useState<Job | null>(null);
   const [tab, setTab] = useState("new_checkin");
+  const [returnedSeed, setReturnedSeed] = useState<CheckInPrefillSeed | null>(null);
   const [loading, setLoading] = useState(true);
   const activeColumns = useMemo(() => columns.filter((column) => column.key !== "completed"), []);
   const completedJobs = useMemo(
@@ -425,11 +448,25 @@ export default function Jobs() {
         </TabsList>
 
         <TabsContent value="new_checkin" className="mt-4">
-          <CheckInForm mode="new" onCreated={() => { setTab("active"); load(); }} userId={user?.id} />
+          <CheckInForm
+            mode="new"
+            onCreated={() => { setTab("active"); load(); }}
+            onOpenReturnedCheckIn={(seed) => {
+              setReturnedSeed(seed);
+              setTab("returned_checkin");
+            }}
+            userId={user?.id}
+          />
         </TabsContent>
 
         <TabsContent value="returned_checkin" className="mt-4">
-          <CheckInForm mode="returned" onCreated={() => { setTab("active"); load(); }} userId={user?.id} />
+          <CheckInForm
+            mode="returned"
+            onCreated={() => { setTab("active"); load(); }}
+            prefillSeed={returnedSeed}
+            onPrefillConsumed={() => setReturnedSeed(null)}
+            userId={user?.id}
+          />
         </TabsContent>
 
         <TabsContent value="active" className="mt-4">
@@ -559,10 +596,16 @@ function BillingRow({ job, onOpen, onChange }: { job: Job; onOpen: () => void; o
 
 function CheckInForm({
   onCreated,
+  onOpenReturnedCheckIn,
+  prefillSeed,
+  onPrefillConsumed,
   userId,
   mode,
 }: {
   onCreated: () => void;
+  onOpenReturnedCheckIn?: (seed: CheckInPrefillSeed) => void;
+  prefillSeed?: CheckInPrefillSeed | null;
+  onPrefillConsumed?: () => void;
   userId?: string;
   mode: "new" | "returned";
 }) {
@@ -581,6 +624,7 @@ function CheckInForm({
   const [photos, setPhotos] = useState<Partial<Record<JobCardPhotoKind, JobCardPhotoDraft>>>({});
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [checkingExisting, setCheckingExisting] = useState(false);
   const [aiResult, setAiResult] = useState<any>(null);
   const [hasInsurance, setHasInsurance] = useState(false);
   const [insuranceCompany, setInsuranceCompany] = useState("");
@@ -593,11 +637,13 @@ function CheckInForm({
   const [previousJobs, setPreviousJobs] = useState<ReturnVisitJob[]>([]);
   const [selectedPreviousJobId, setSelectedPreviousJobId] = useState("");
   const isReturnedMode = mode === "returned";
-  const normalizedPlate = plate.trim().toUpperCase();
+  const rawPlateInput = plate.trim().toUpperCase();
+  const normalizedPlate = normalizePlateUsername(plate);
   const showReturnVisitFields = isReturnedMode && previousJobs.length > 0;
   const selectedPreviousJob = previousJobs.find((row) => row.id === selectedPreviousJobId) ?? previousJobs[0] ?? null;
   const needsFreshComplaint = showReturnVisitFields && returnVisitType !== "same_problem";
   const selectedPrimaryServiceType = serviceTypes[0] ?? DEFAULT_SERVICE_TYPE;
+  const plateVariants = Array.from(new Set([rawPlateInput, normalizedPlate].filter(Boolean)));
 
   const toggleServiceType = (value: ServiceTypeValue) => {
     setServiceTypes((current) => {
@@ -619,6 +665,45 @@ function CheckInForm({
     })();
   }, []);
 
+  const fetchPreviousJobsByPlate = async () => {
+    if (plateVariants.length === 0) return [] as ReturnVisitJob[];
+
+    let query = supabase
+      .from("jobs")
+      .select(`
+        id,
+        job_no,
+        status,
+        customer_name,
+        customer_phone,
+        vehicle_label,
+        reported_problem,
+        complaint,
+        fuel_type,
+        service_type,
+        service_types,
+        paint_color_code,
+        vehicle_color,
+        has_insurance,
+        insurance_company,
+        insurance_policy_no,
+        lead_source,
+        lead_source_detail,
+        created_at,
+        completed_at
+      `)
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    query = plateVariants.length === 1
+      ? query.eq("plate", plateVariants[0])
+      : query.in("plate", plateVariants);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data ?? []) as ReturnVisitJob[];
+  };
+
   useEffect(() => {
     if (normalizedPlate.length < 4) {
       setHistory({ count: 0 });
@@ -628,69 +713,74 @@ function CheckInForm({
       setReturnVisitNotes("");
       return;
     }
+    let cancelled = false;
     const timeoutId = setTimeout(async () => {
-      const { data } = await supabase
-        .from("jobs")
-        .select(`
-          id,
-          job_no,
-          status,
-          customer_name,
-          customer_phone,
-          vehicle_label,
-          reported_problem,
-          complaint,
-          fuel_type,
-          service_type,
-          service_types,
-          paint_color_code,
-          vehicle_color,
-          has_insurance,
-          insurance_company,
-          insurance_policy_no,
-          lead_source,
-          lead_source_detail,
-          created_at,
-          completed_at
-        `)
-        .eq("plate", normalizedPlate)
-        .order("created_at", { ascending: false })
-        .limit(5);
-      const rows = (data ?? []) as ReturnVisitJob[];
-      setHistory({ count: rows.length, lastJobNo: rows[0]?.job_no });
-      setPreviousJobs(rows);
-      setSelectedPreviousJobId((current) => {
-        if (current && rows.some((row) => row.id === current)) return current;
-        return rows[0]?.id ?? "";
-      });
+      try {
+        const rows = await fetchPreviousJobsByPlate();
+        if (cancelled) return;
 
-      if (!isReturnedMode || rows.length === 0) return;
+        setHistory({ count: rows.length, lastJobNo: rows[0]?.job_no });
+        setPreviousJobs(rows);
+        setSelectedPreviousJobId((current) => {
+          if (current && rows.some((row) => row.id === current)) return current;
+          return rows[0]?.id ?? "";
+        });
 
-      const latest = rows[0];
-      const [seedMake, ...seedModelParts] = (latest.vehicle_label ?? "").trim().split(/\s+/).filter(Boolean);
-      const seedModel = seedModelParts.join(" ");
+        if (!isReturnedMode || rows.length === 0) return;
 
-      setCustomer((current) => current || latest.customer_name || "");
-      setPhone((current) => current || latest.customer_phone || "");
-      setMake((current) => current || seedMake || "");
-      setModel((current) => current || seedModel || "");
-      setComplaint((current) => current || latest.reported_problem || latest.complaint || "");
-      setFuelType((current) => current === "unknown" && latest.fuel_type ? latest.fuel_type as "petrol" | "diesel" | "unknown" : current);
-      setVehicleColor((current) => current || latest.vehicle_color || "");
-      setServiceTypes((current) => {
-        const isDefaultOnly = current.length === 1 && current[0] === DEFAULT_SERVICE_TYPE;
-        if (!isDefaultOnly) return current;
-        return getServiceTypes(latest.service_types, latest.service_type);
-      });
-      setPaintCode((current) => current || latest.paint_color_code || "");
-      setHasInsurance((current) => current || Boolean(latest.has_insurance));
-      setInsuranceCompany((current) => current || latest.insurance_company || "");
-      setInsurancePolicy((current) => current || latest.insurance_policy_no || "");
-      setClientSource((current) => current === "walk_in" && latest.lead_source ? latest.lead_source : current);
-      setClientSourceDetail((current) => current || latest.lead_source_detail || "");
+        const latest = rows[0];
+        const [seedMake, ...seedModelParts] = (latest.vehicle_label ?? "").trim().split(/\s+/).filter(Boolean);
+        const seedModel = seedModelParts.join(" ");
+
+        setCustomer((current) => current || latest.customer_name || "");
+        setPhone((current) => current || latest.customer_phone || "");
+        setMake((current) => current || seedMake || "");
+        setModel((current) => current || seedModel || "");
+        setComplaint((current) => current || latest.reported_problem || latest.complaint || "");
+        setFuelType((current) => current === "unknown" && latest.fuel_type ? latest.fuel_type as "petrol" | "diesel" | "unknown" : current);
+        setVehicleColor((current) => current || latest.vehicle_color || "");
+        setServiceTypes((current) => {
+          const isDefaultOnly = current.length === 1 && current[0] === DEFAULT_SERVICE_TYPE;
+          if (!isDefaultOnly) return current;
+          return getServiceTypes(latest.service_types, latest.service_type);
+        });
+        setPaintCode((current) => current || latest.paint_color_code || "");
+        setHasInsurance((current) => current || Boolean(latest.has_insurance));
+        setInsuranceCompany((current) => current || latest.insurance_company || "");
+        setInsurancePolicy((current) => current || latest.insurance_policy_no || "");
+        setClientSource((current) => current === "walk_in" && latest.lead_source ? latest.lead_source : current);
+        setClientSourceDetail((current) => current || latest.lead_source_detail || "");
+      } catch (error: any) {
+        if (!cancelled) toast.error(error?.message ?? "Could not check the vehicle history");
+      }
     }, 400);
-    return () => clearTimeout(timeoutId);
-  }, [isReturnedMode, normalizedPlate]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [isReturnedMode, normalizedPlate, rawPlateInput]);
+
+  useEffect(() => {
+    if (!isReturnedMode || !prefillSeed) return;
+    setPlate(prefillSeed.plate);
+    setCustomer(prefillSeed.customer);
+    setPhone(prefillSeed.phone);
+    setMake(prefillSeed.make);
+    setModel(prefillSeed.model);
+    setAssignedMechId(prefillSeed.assignedMechId);
+    setComplaint(prefillSeed.complaint);
+    setServiceTypes(prefillSeed.serviceTypes.length > 0 ? prefillSeed.serviceTypes : [DEFAULT_SERVICE_TYPE]);
+    setFuelType(prefillSeed.fuelType);
+    setVehicleColor(prefillSeed.vehicleColor);
+    setPaintCode(prefillSeed.paintCode);
+    setHasInsurance(prefillSeed.hasInsurance);
+    setInsuranceCompany(prefillSeed.insuranceCompany);
+    setInsurancePolicy(prefillSeed.insurancePolicy);
+    setClientSource(prefillSeed.clientSource);
+    setClientSourceDetail(prefillSeed.clientSourceDetail);
+    setSelectedPreviousJobId(prefillSeed.selectedPreviousJobId ?? "");
+    onPrefillConsumed?.();
+  }, [isReturnedMode, onPrefillConsumed, prefillSeed]);
 
   const analysePhotos = async () => {
     const images = VEHICLE_AI_PHOTO_KINDS
@@ -751,6 +841,47 @@ function CheckInForm({
     setReturnVisitNotes("");
     setPreviousJobs([]);
     setSelectedPreviousJobId("");
+  };
+
+  const buildReturnedSeed = (preferredPreviousJobId?: string): CheckInPrefillSeed => ({
+    plate: normalizedPlate || rawPlateInput,
+    customer,
+    phone,
+    make,
+    model,
+    assignedMechId,
+    complaint,
+    serviceTypes,
+    fuelType,
+    vehicleColor,
+    paintCode,
+    hasInsurance,
+    insuranceCompany,
+    insurancePolicy,
+    clientSource,
+    clientSourceDetail,
+    selectedPreviousJobId: preferredPreviousJobId,
+  });
+
+  const checkExistingVisit = async () => {
+    if (normalizedPlate.length < 4) {
+      toast.error("Enter the plate first");
+      return;
+    }
+    setCheckingExisting(true);
+    try {
+      const rows = await fetchPreviousJobsByPlate();
+      if (rows.length === 0) {
+        toast.info("No earlier job found. You can continue with a new check-in.");
+        return;
+      }
+      onOpenReturnedCheckIn?.(buildReturnedSeed(rows[0]?.id));
+      toast.success(`Found ${rows.length} earlier job${rows.length > 1 ? "s" : ""}. Opening Returned Check-In.`);
+    } catch (error: any) {
+      toast.error(error?.message ?? "Could not search the database right now");
+    } finally {
+      setCheckingExisting(false);
+    }
   };
 
   const submit = async (event: React.FormEvent) => {
@@ -817,6 +948,18 @@ function CheckInForm({
       ? previousJob.lead_source
       : clientSource;
     const resolvedClientSourceDetail = clientSourceDetail.trim() || previousJob?.lead_source_detail || "";
+    const requestFingerprint = buildIdempotencyFingerprint([
+      mode,
+      normalizedPlate,
+      customerName,
+      customerPhone,
+      resolvedComplaint,
+      selectedMechanic?.id ?? "",
+      previousJob?.id ?? "",
+      returnVisitType,
+      userId ?? "",
+    ]);
+    const requestId = getIdempotencyRequestId("job-checkin", requestFingerprint);
 
     setBusy(true);
     try {
@@ -862,12 +1005,15 @@ function CheckInForm({
       }
 
       let vehicleId: string | null = null;
-      const { data: existingVehicle } = await supabase
+      let vehicleQuery = supabase
         .from("vehicles")
         .select("id, fuel_type, color")
-        .eq("plate", normalizedPlate)
         .limit(1)
         .maybeSingle();
+      vehicleQuery = plateVariants.length === 1
+        ? vehicleQuery.eq("plate", plateVariants[0])
+        : vehicleQuery.in("plate", plateVariants);
+      const { data: existingVehicle } = await vehicleQuery;
       const existingVehicleFuel = (existingVehicle as any)?.fuel_type as string | null;
       const existingVehicleColor = (existingVehicle as any)?.color as string | null;
       const vehiclePayload = {
@@ -890,7 +1036,7 @@ function CheckInForm({
         vehicleId = data.id;
       }
 
-      const { data: job, error: jobError } = await supabase.from("jobs").insert({
+      const { data: job, error: jobError } = await supabase.from("jobs").upsert({
         plate: normalizedPlate,
         vehicle_id: vehicleId,
         client_id: clientId,
@@ -917,7 +1063,8 @@ function CheckInForm({
         return_visit_notes: showReturnVisitFields ? (returnVisitNotes.trim() || null) : null,
         status: "diagnosis",
         created_by: userId ?? null,
-      }).select("id, job_no").single();
+        client_request_id: requestId,
+      }, { onConflict: "client_request_id" }).select("id, job_no").single();
       if (jobError) throw jobError;
 
       const { error: portalError, response: portalResponse } = await invokeEdgeFunction("ensure-client-portal-user", {
@@ -956,7 +1103,7 @@ function CheckInForm({
         const rows: Array<{ job_id: string; kind: JobCardPhotoKind; storage_path: string; uploaded_by: string | null }> = [];
         for (const [kind, photo] of draftPhotos) {
           const ext = photo.file.name.split(".").pop()?.toLowerCase() || "jpg";
-          const storagePath = `${job.id}/${kind}-${Date.now()}.${ext}`;
+          const storagePath = `${job.id}/${kind}.${ext}`;
           const { error } = await supabase.storage.from("job-card-photos").upload(storagePath, photo.file, { upsert: true });
           if (error) throw error;
           rows.push({
@@ -967,7 +1114,7 @@ function CheckInForm({
           });
         }
         if (rows.length > 0) {
-          const { error } = await supabase.from("job_card_photos").insert(rows);
+          const { error } = await supabase.from("job_card_photos").upsert(rows, { onConflict: "job_id,kind" });
           if (error) throw error;
         }
       }
@@ -983,6 +1130,7 @@ function CheckInForm({
       }
 
       toast.success("Job card created — number assigned");
+      clearIdempotencyRequestId("job-checkin", requestFingerprint);
       resetForm();
       onCreated();
     } catch (error: any) {
@@ -1045,8 +1193,19 @@ function CheckInForm({
       <form onSubmit={submit} className="grid gap-4 md:grid-cols-2">
         <div className="md:col-span-2 space-y-2">
           <Label>Plate number</Label>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Input placeholder="KCA 123A" value={plate} onChange={(e) => setPlate(e.target.value)} required />
+            {!isReturnedMode && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={checkExistingVisit}
+                disabled={checkingExisting || normalizedPlate.length < 4}
+              >
+                {checkingExisting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Link2 className="mr-2 h-4 w-4" />}
+                Check existing
+              </Button>
+            )}
             <CameraInput onPick={(file, preview) => setPhotos((current) => ({ ...current, plate: { file, preview } }))} />
           </div>
           {photos.plate && <img src={photos.plate.preview} alt="plate" className="mt-1 h-12 rounded" />}

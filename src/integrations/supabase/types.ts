@@ -172,6 +172,7 @@ export type Database = {
           approved_at: string | null
           approved_by: string | null
           arrived_early_at: string | null
+          client_request_id: string | null
           created_at: string
           destination: string | null
           expected_return: string | null
@@ -194,6 +195,7 @@ export type Database = {
           approved_at?: string | null
           approved_by?: string | null
           arrived_early_at?: string | null
+          client_request_id?: string | null
           created_at?: string
           destination?: string | null
           expected_return?: string | null
@@ -216,6 +218,7 @@ export type Database = {
           approved_at?: string | null
           approved_by?: string | null
           arrived_early_at?: string | null
+          client_request_id?: string | null
           created_at?: string
           destination?: string | null
           expected_return?: string | null
@@ -675,6 +678,7 @@ export type Database = {
           assigned_mechanic_id: string | null
           client_approved_at: string | null
           client_feedback_token: string | null
+          client_request_id: string | null
           client_id: string | null
           client_rating: number | null
           closed_at: string | null
@@ -742,6 +746,7 @@ export type Database = {
           assigned_mechanic_id?: string | null
           client_approved_at?: string | null
           client_feedback_token?: string | null
+          client_request_id?: string | null
           client_id?: string | null
           client_rating?: number | null
           closed_at?: string | null
@@ -809,6 +814,7 @@ export type Database = {
           assigned_mechanic_id?: string | null
           client_approved_at?: string | null
           client_feedback_token?: string | null
+          client_request_id?: string | null
           client_id?: string | null
           client_rating?: number | null
           closed_at?: string | null
@@ -1045,6 +1051,7 @@ export type Database = {
         Row: {
           approved_at: string | null
           approved_by: string | null
+          client_request_id: string | null
           created_at: string
           delivered_at: string | null
           estimated_unit_price: number
@@ -1070,6 +1077,7 @@ export type Database = {
         Insert: {
           approved_at?: string | null
           approved_by?: string | null
+          client_request_id?: string | null
           created_at?: string
           delivered_at?: string | null
           estimated_unit_price?: number
@@ -1095,6 +1103,7 @@ export type Database = {
         Update: {
           approved_at?: string | null
           approved_by?: string | null
+          client_request_id?: string | null
           created_at?: string
           delivered_at?: string | null
           estimated_unit_price?: number

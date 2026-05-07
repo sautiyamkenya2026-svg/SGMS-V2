@@ -77,6 +77,9 @@ export default function Users() {
   const [editing, setEditing] = useState<Profile | null>(null);
   const [editForm, setEditForm] = useState({ display_name: "", phone: "", email: "", national_id: "", address: "", notes: "" });
   const [savingEdit, setSavingEdit] = useState(false);
+  const [resetPassword, setResetPassword] = useState("");
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [resettingPassword, setResettingPassword] = useState(false);
   const [aiSettings, setAiSettings] = useState({ ...AI_SETTING_DEFAULTS });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [showGeminiKey, setShowGeminiKey] = useState(false);
@@ -91,6 +94,7 @@ export default function Users() {
     api_key: "",
   });
   const [credCounts, setCredCounts] = useState<CredCount>({});
+  const [syncingClientPasswords, setSyncingClientPasswords] = useState(false);
 
   const load = async () => {
     const [{ data: p }, { data: r }, { data: w }] = await Promise.all([
@@ -340,6 +344,8 @@ export default function Users() {
       address: p.address ?? "",
       notes: p.notes ?? "",
     });
+    setResetPassword("");
+    setShowResetPassword(false);
   };
 
   const saveEdit = async () => {
@@ -365,6 +371,58 @@ export default function Users() {
     toast({ title: "Updated ✓" });
     setEditing(null);
     load();
+  };
+
+  const resetUserPassword = async () => {
+    if (!editing || !isSuper) return;
+    if (resetPassword.trim().length < 6) {
+      toast({ title: "Password too short", description: "Use at least 6 characters.", variant: "destructive" });
+      return;
+    }
+    setResettingPassword(true);
+    try {
+      const { data, error, response } = await invokeEdgeFunction("admin-reset-user-password", {
+        body: {
+          user_id: editing.id,
+          password: resetPassword.trim(),
+        },
+      });
+      if (error || (data as any)?.error) {
+        const message = (data as any)?.error
+          ?? await readEdgeFunctionErrorMessage(error, response, "Password reset failed.");
+        toast({ title: "Reset failed", description: friendlyErrorMessage(message, "Could not reset that password."), variant: "destructive" });
+        return;
+      }
+      toast({ title: "Password reset", description: `${editing.display_name ?? editing.email ?? "The user"} can use the new password immediately.` });
+      setResetPassword("");
+      setShowResetPassword(false);
+    } finally {
+      setResettingPassword(false);
+    }
+  };
+
+  const syncClientPortalPasswords = async () => {
+    if (!isSuper) return;
+    setSyncingClientPasswords(true);
+    try {
+      const { data, error, response } = await invokeEdgeFunction("sync-client-portal-passwords");
+      if (error || (data as any)?.error) {
+        const message = (data as any)?.error
+          ?? await readEdgeFunctionErrorMessage(error, response, "Client portal sync failed.");
+        toast({ title: "Sync failed", description: friendlyErrorMessage(message, "Could not sync client portal passwords."), variant: "destructive" });
+        return;
+      }
+      const updated = Number((data as any)?.updated ?? 0);
+      const skipped = Number((data as any)?.skipped ?? 0);
+      const failures = Array.isArray((data as any)?.failures) ? (data as any).failures.length : 0;
+      toast({
+        title: "Client passwords synced",
+        description: `${updated} updated, ${skipped} skipped${failures ? `, ${failures} failed` : ""}.`,
+        variant: failures ? "destructive" : "default",
+      });
+    } finally {
+      setSyncingClientPasswords(false);
+    }
   };
 
   if (!isAdmin) {
@@ -541,6 +599,21 @@ export default function Users() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {isSuper && (
+        <Card className="p-5 border-amber-500/40">
+          <div className="flex items-center gap-2 mb-1">
+            <KeyRound className="h-4 w-4 text-amber-500" />
+            <h3 className="font-semibold">Client Portal Maintenance</h3>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Reset every client portal password to the phone number currently saved on file. This fixes older accounts created before phone normalization was tightened.
+          </p>
+          <Button onClick={syncClientPortalPasswords} disabled={syncingClientPasswords} className="bg-gradient-primary">
+            {syncingClientPasswords ? "Syncing client passwords..." : "Sync client portal passwords"}
+          </Button>
+        </Card>
+      )}
 
       {isSuper && (
         <Card className="p-5 border-amber-500/40">
@@ -795,7 +868,13 @@ export default function Users() {
         </div>
       </Card>
 
-      <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null); }}>
+      <Dialog open={!!editing} onOpenChange={(o) => {
+        if (!o) {
+          setEditing(null);
+          setResetPassword("");
+          setShowResetPassword(false);
+        }
+      }}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit user details</DialogTitle></DialogHeader>
           <div className="grid gap-3 py-2">
@@ -807,7 +886,37 @@ export default function Users() {
               <div><Label>Address</Label><Input value={editForm.address} onChange={e => setEditForm({ ...editForm, address: e.target.value })} /></div>
             </div>
             <div><Label>Notes</Label><Textarea rows={3} value={editForm.notes} onChange={e => setEditForm({ ...editForm, notes: e.target.value })} /></div>
-            <p className="text-[11px] text-muted-foreground">To change the password, ask the user to use "Forgot password" on the login screen.</p>
+            {isSuper && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="h-4 w-4 text-amber-500" />
+                  <p className="text-sm font-medium">Reset password</p>
+                </div>
+                <div className="relative">
+                  <Input
+                    type={showResetPassword ? "text" : "password"}
+                    value={resetPassword}
+                    onChange={e => setResetPassword(e.target.value)}
+                    placeholder="New temporary password"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPassword(s => !s)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    aria-label={showResetPassword ? "Hide password" : "Show password"}
+                  >
+                    {showResetPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <div className="flex justify-end">
+                  <Button type="button" variant="outline" onClick={resetUserPassword} disabled={resettingPassword || resetPassword.trim().length < 6}>
+                    {resettingPassword ? "Resetting..." : "Reset password"}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {!isSuper && <p className="text-[11px] text-muted-foreground">Only super admins can reset passwords directly.</p>}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>

@@ -12,6 +12,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { canSeePrices } from "@/lib/permissions";
+import { buildIdempotencyFingerprint, clearIdempotencyRequestId, getIdempotencyRequestId } from "@/lib/idempotency";
 
 type Req = {
   id: string; job_id: string | null; mechanic_name: string | null; kind: string;
@@ -30,6 +31,7 @@ export default function Requests() {
   const [rows, setRows] = useState<Req[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ job_id: "", kind: "part", item_name: "", qty: "1", notes: "", source: "in_house", estimated_unit_price: "0", is_major: false });
 
   const load = async () => {
@@ -44,7 +46,20 @@ export default function Requests() {
 
   const submit = async () => {
     if (!form.item_name.trim()) { toast({ title: "Item name required", variant: "destructive" }); return; }
-    const { error } = await supabase.from("part_requests").insert({
+    const requestFingerprint = buildIdempotencyFingerprint([
+      form.job_id,
+      form.kind,
+      form.item_name,
+      form.qty,
+      form.notes,
+      form.source,
+      form.estimated_unit_price,
+      form.is_major ? "major" : "standard",
+      user?.id ?? "",
+    ]);
+    const requestId = getIdempotencyRequestId("part-request-page", requestFingerprint);
+    setSubmitting(true);
+    const { error } = await supabase.from("part_requests").upsert({
       job_id: form.job_id || null,
       kind: form.kind,
       item_name: form.item_name,
@@ -55,8 +70,11 @@ export default function Requests() {
       source: form.source,
       estimated_unit_price: Number(form.estimated_unit_price || 0),
       is_major: form.is_major,
-    } as any);
+      client_request_id: requestId,
+    } as any, { onConflict: "client_request_id" });
+    setSubmitting(false);
     if (error) { toast({ title: "Failed", description: error.message, variant: "destructive" }); return; }
+    clearIdempotencyRequestId("part-request-page", requestFingerprint);
     toast({ title: "Request submitted" });
     setOpen(false);
     setForm({ job_id: "", kind: "part", item_name: "", qty: "1", notes: "", source: "in_house", estimated_unit_price: "0", is_major: false });
@@ -155,7 +173,7 @@ export default function Requests() {
               </label>
               <div><Label>Notes</Label><Textarea rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
             </div>
-            <DialogFooter><Button onClick={submit} className="bg-gradient-primary">Submit</Button></DialogFooter>
+            <DialogFooter><Button onClick={submit} disabled={submitting} className="bg-gradient-primary">{submitting ? "Submitting..." : "Submit"}</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

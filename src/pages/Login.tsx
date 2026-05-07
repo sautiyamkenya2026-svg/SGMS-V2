@@ -5,12 +5,14 @@ import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/hooks/use-toast";
 import logo from "@/assets/golden-logo.png";
+import { Eye, EyeOff } from "lucide-react";
 
 export function Login() {
   const { signIn } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,13 +64,31 @@ export function Login() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
-              <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required />
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  minLength={6}
+                  required
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((current) => !current)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
             <Button type="submit" disabled={busy} className="w-full bg-gradient-primary hover:opacity-90 shadow-md">
               {busy ? "Please wait…" : "Sign in"}
             </Button>
             <p className="text-xs text-center text-muted-foreground pt-2">
-              Staff accounts are created by an administrator. Client accounts are created automatically when your job card is opened.
+              Staff accounts are created by an administrator. Client usernames are the plate number, and the phone password works with or without spaces or +254.
             </p>
           </form>
         </div>

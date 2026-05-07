@@ -29,7 +29,7 @@ type Checkin = { id: string; tool_id: string; mechanic_id: string | null; period
 const period = () => new Date().toISOString().slice(0, 7); // YYYY-MM
 
 export default function Tools() {
-  const { hasRole } = useAuth();
+  const { hasRole, user } = useAuth();
   const canEdit = hasRole("admin") || hasRole("storekeeper");
   const [tools, setTools] = useState<Tool[]>([]);
   const [mechanics, setMechanics] = useState<Mechanic[]>([]);
@@ -144,11 +144,16 @@ export default function Tools() {
 
   const recordCheckin = async (tool: Tool, status: string, notes?: string) => {
     const holder = holderOf(tool.id);
-    const existing = checkinOf(tool.id);
-    const payload = { tool_id: tool.id, mechanic_id: holder?.id ?? null, period: currentPeriod, status, notes: notes ?? null };
-    const { error } = existing
-      ? await supabase.from("tool_checkins").update(payload).eq("id", existing.id)
-      : await supabase.from("tool_checkins").insert(payload);
+    const payload = {
+      tool_id: tool.id,
+      mechanic_id: holder?.id ?? null,
+      period: currentPeriod,
+      status,
+      notes: notes ?? null,
+      checked_by: user?.id ?? null,
+      checked_at: new Date().toISOString(),
+    };
+    const { error } = await supabase.from("tool_checkins").upsert(payload, { onConflict: "tool_id,period" });
     if (error) { toast({ title: "Failed", description: error.message, variant: "destructive" }); return; }
     toast({ title: `Marked ${status}` }); load();
   };

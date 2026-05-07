@@ -11,6 +11,7 @@ import { Search, ShieldCheck, ShieldAlert, Plus, CheckCircle2, XCircle, DoorOpen
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
+import { buildIdempotencyFingerprint, clearIdempotencyRequestId, getIdempotencyRequestId } from "@/lib/idempotency";
 
 type Job = { id: string; job_no: string; plate: string; status: string; gate_pass_issued: boolean; customer_name: string | null };
 type GPR = {
@@ -38,6 +39,7 @@ export default function Gate() {
   const [reqs, setReqs] = useState<GPR[]>([]);
   const [allReqs, setAllReqs] = useState<GPR[]>([]);
   const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ reason: "roadtest", reason_detail: "", destination: "", expected_return: "" });
   const isFinalRelease = form.reason === "final_release";
 
@@ -59,18 +61,36 @@ export default function Gate() {
 
   const submitReq = async () => {
     if (!job) return;
-    const { error } = await supabase.from("gate_pass_requests").insert({
-      job_id: job.id, plate: job.plate,
-      reason: form.reason, reason_detail: form.reason_detail || null,
+    const expectedReturn = form.reason === "final_release"
+      ? null
+      : (form.expected_return ? new Date(form.expected_return).toISOString() : null);
+    const requestFingerprint = buildIdempotencyFingerprint([
+      job.id,
+      job.plate,
+      form.reason,
+      form.reason_detail,
+      form.destination,
+      expectedReturn,
+      user?.id ?? "",
+    ]);
+    const requestId = getIdempotencyRequestId("gate-pass-request", requestFingerprint);
+
+    setSubmitting(true);
+    const { error } = await supabase.from("gate_pass_requests").upsert({
+      job_id: job.id,
+      plate: job.plate,
+      reason: form.reason,
+      reason_detail: form.reason_detail || null,
       destination: form.destination || null,
       // Final release = car will not return; do not store an expected_return.
-      expected_return: form.reason === "final_release"
-        ? null
-        : (form.expected_return ? new Date(form.expected_return).toISOString() : null),
+      expected_return: expectedReturn,
       is_final_release: form.reason === "final_release",
       requested_by: user?.id ?? null,
-    });
+      client_request_id: requestId,
+    }, { onConflict: "client_request_id" });
+    setSubmitting(false);
     if (error) { toast({ title: "Failed", description: error.message, variant: "destructive" }); return; }
+    clearIdempotencyRequestId("gate-pass-request", requestFingerprint);
     toast({ title: "Release request submitted" });
     setOpen(false);
     setForm({ reason: "roadtest", reason_detail: "", destination: "", expected_return: "" });
@@ -186,7 +206,7 @@ export default function Gate() {
                       </p>
                     )}
                   </div>
-                  <DialogFooter><Button onClick={submitReq} className="bg-gradient-primary">Submit</Button></DialogFooter>
+                  <DialogFooter><Button onClick={submitReq} disabled={submitting} className="bg-gradient-primary">{submitting ? "Submitting..." : "Submit"}</Button></DialogFooter>
                 </DialogContent>
               </Dialog>
             )}
