@@ -434,10 +434,37 @@ async function toolPerformAction(args: any, user: UserCtx) {
       if (!jobId) return { error: "job_id required" };
       const { data: job, error: je } = await sb.from("jobs").select("id, job_no, plate, status").eq("id", jobId).maybeSingle();
       if (je || !job) return { error: je?.message ?? "Job not found" };
-      const { data: gp, error: ge } = await sb.from("gate_passes").insert({
-        job_id: jobId, issued_by: user.id, message: payload?.note ?? null,
-      }).select().single();
-      if (ge) return { error: ge.message };
+      let gp;
+      const { data: existingGatePass, error: existingGatePassError } = await sb
+        .from("gate_passes")
+        .select("*")
+        .eq("job_id", jobId)
+        .order("issued_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (existingGatePassError) return { error: existingGatePassError.message };
+      if (existingGatePass) {
+        gp = existingGatePass;
+      } else {
+        const { data: insertedGatePass, error: ge } = await sb.from("gate_passes").insert({
+          job_id: jobId, issued_by: user.id, message: payload?.note ?? null,
+        }).select().single();
+        if (ge?.code === "23505") {
+          const { data: racedGatePass, error: racedGatePassError } = await sb
+            .from("gate_passes")
+            .select("*")
+            .eq("job_id", jobId)
+            .order("issued_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (racedGatePassError) return { error: racedGatePassError.message };
+          if (!racedGatePass) return { error: ge.message };
+          gp = racedGatePass;
+        } else {
+          if (ge) return { error: ge.message };
+          gp = insertedGatePass;
+        }
+      }
       await sb.from("jobs").update({
         gate_pass_issued: true,
         status: job.status === "completed" ? "closed" : job.status,

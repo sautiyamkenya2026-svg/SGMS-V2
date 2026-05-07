@@ -304,6 +304,17 @@ async function ensureGatePass(jobId: string) {
     .insert({ job_id: jobId })
     .select("id, pass_no, issued_at")
     .single();
+  if (error?.code === "23505") {
+    const { data: raced, error: racedError } = await supabase
+      .from("gate_passes")
+      .select("id, pass_no, issued_at")
+      .eq("job_id", jobId)
+      .order("issued_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (racedError) throw racedError;
+    if (raced) return raced as GatePassRow;
+  }
   if (error) throw error;
   return data as GatePassRow;
 }
