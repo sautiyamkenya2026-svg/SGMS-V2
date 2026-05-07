@@ -1,3 +1,8 @@
+# SGMS-V2
+
+Starter repository for SGMS-V2.
+
+See the project README for setup and development instructions.
 # Golden Automotive Solutions
 
 Smart garage management system built with Vite, React, and Supabase.

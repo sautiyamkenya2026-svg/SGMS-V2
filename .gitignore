@@ -1,3 +1,14 @@
+node_modules/
+dist/
+build/
+.env
+.DS_Store
+/.idea
+/.vscode
+npm-debug.log
+yarn-error.log
+pnpm-lock.yaml
+*.log
 # Logs
 logs
 *.log
