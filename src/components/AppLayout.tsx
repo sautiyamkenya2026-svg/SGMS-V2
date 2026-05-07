@@ -27,6 +27,7 @@ export function AppLayout({ children }: { children?: ReactNode }) {
   const [q, setQ] = useState("");
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [notifOpen, setNotifOpen] = useState(false);
+  const isClientPortalUser = Boolean(user?.roles.length === 1 && user.roles[0] === "client");
 
   useEffect(() => {
     if (!user) return;
@@ -91,15 +92,17 @@ export function AppLayout({ children }: { children?: ReactNode }) {
                 <ArrowLeft className="h-4 w-4" />
               </Button>
             )}
-            <form onSubmit={submitSearch} className="relative hidden flex-1 max-w-md md:block ml-2">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-              <Input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search plate, customer, job #…  (Enter)"
-                className="pl-9 h-9 bg-muted/40 border-0"
-              />
-            </form>
+            {!isClientPortalUser && (
+              <form onSubmit={submitSearch} className="relative hidden flex-1 max-w-md md:block ml-2">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+                <Input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search plate, customer, job #…  (Enter)"
+                  className="pl-9 h-9 bg-muted/40 border-0"
+                />
+              </form>
+            )}
             <div className="ml-auto flex items-center gap-3">
               <Popover open={notifOpen} onOpenChange={(o) => { setNotifOpen(o); if (o) markAllRead(); }}>
                 <PopoverTrigger asChild>
@@ -163,14 +166,18 @@ export function AppLayout({ children }: { children?: ReactNode }) {
                       </div>
                     </div>
                   </DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => navigate("/users")}>
-                    <UserIcon className="h-4 w-4 mr-2" /> User management
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => navigate("/settings")}>
-                    <SettingsIcon className="h-4 w-4 mr-2" /> Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
+                  {!isClientPortalUser && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => navigate("/users")}>
+                        <UserIcon className="h-4 w-4 mr-2" /> User management
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => navigate("/settings")}>
+                        <SettingsIcon className="h-4 w-4 mr-2" /> Settings
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
                   <DropdownMenuItem onClick={() => logout()} className="text-destructive focus:text-destructive">
                     <LogOut className="h-4 w-4 mr-2" /> Sign out
                   </DropdownMenuItem>

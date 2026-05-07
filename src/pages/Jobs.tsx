@@ -113,6 +113,7 @@ interface Job {
   ai_diagnostic_summary: string | null;
   recommended_parts: Array<{ name: string; qty: number; reason: string; severity: string; requested?: boolean }>;
   financial_summary: string | null;
+  fuel_type: string | null;
   quotation_amount: number;
   invoice_amount: number;
   receipt_amount: number;
@@ -134,6 +135,7 @@ interface Job {
   payment_bypass: boolean;
   payment_bypass_reason: string | null;
   payment_bypass_authorized_by: string | null;
+  vehicle_color: string | null;
 }
 
 const columns: { key: JobStatus; label: string; color: string }[] = [
@@ -194,8 +196,10 @@ type ReturnVisitJob = {
   vehicle_label: string | null;
   reported_problem: string | null;
   complaint: string | null;
+  fuel_type: string | null;
   service_type: string | null;
   paint_color_code: string | null;
+  vehicle_color: string | null;
   has_insurance: boolean;
   insurance_company: string | null;
   insurance_policy_no: string | null;
@@ -224,11 +228,6 @@ const CLIENT_SOURCE_OPTIONS = [
   { value: "insurance", label: "Insurance partner" },
   { value: "other", label: "Other" },
 ] as const;
-
-const SERVICE_KIT_PRESETS = {
-  petrol: ["Engine oil", "Air filter", "Cabin filter", "Oil filter"],
-  diesel: ["Engine oil", "Air filter", "Cabin filter", "Oil filter", "Fuel filter"],
-} as const;
 
 type DocumentKind = "quotation" | "deposit_invoice" | "invoice" | "receipt";
 
@@ -564,6 +563,8 @@ function CheckInForm({
   const [mechRoster, setMechRoster] = useState<Array<{ id: string; name: string; specialties: string[]; level: string }>>([]);
   const [complaint, setComplaint] = useState("");
   const [serviceType, setServiceType] = useState<string>("mechanical");
+  const [fuelType, setFuelType] = useState<"petrol" | "diesel" | "unknown">("unknown");
+  const [vehicleColor, setVehicleColor] = useState("");
   const [paintCode, setPaintCode] = useState("");
   const [photos, setPhotos] = useState<Partial<Record<JobCardPhotoKind, JobCardPhotoDraft>>>({});
   const [busy, setBusy] = useState(false);
@@ -617,8 +618,10 @@ function CheckInForm({
           vehicle_label,
           reported_problem,
           complaint,
+          fuel_type,
           service_type,
           paint_color_code,
+          vehicle_color,
           has_insurance,
           insurance_company,
           insurance_policy_no,
@@ -649,6 +652,8 @@ function CheckInForm({
       setMake((current) => current || seedMake || "");
       setModel((current) => current || seedModel || "");
       setComplaint((current) => current || latest.reported_problem || latest.complaint || "");
+      setFuelType((current) => current === "unknown" && latest.fuel_type ? latest.fuel_type as "petrol" | "diesel" | "unknown" : current);
+      setVehicleColor((current) => current || latest.vehicle_color || "");
       setServiceType((current) => current === "mechanical" && latest.service_type ? latest.service_type : current);
       setPaintCode((current) => current || latest.paint_color_code || "");
       setHasInsurance((current) => current || Boolean(latest.has_insurance));
@@ -681,6 +686,7 @@ function CheckInForm({
       if (data?.make && !make) setMake(data.make);
       if (data?.model && !model) setModel(data.model);
       if (data?.plate && !plate) setPlate(String(data.plate).toUpperCase());
+      if (data?.color && !vehicleColor) setVehicleColor(String(data.color));
       if (Array.isArray(data?.visible_problems) && data.visible_problems.length > 0 && !complaint) {
         setComplaint(data.visible_problems.map((photoIssue: any) => `- ${photoIssue.area}: ${photoIssue.problem} (${photoIssue.severity})`).join("\n"));
       }
@@ -699,6 +705,8 @@ function CheckInForm({
     setAssignedMechId("");
     setComplaint("");
     setServiceType("mechanical");
+    setFuelType("unknown");
+    setVehicleColor("");
     setPaintCode("");
     setPhotos({});
     setAiResult(null);
@@ -746,9 +754,17 @@ function CheckInForm({
       toast.error("Reported problem is required");
       return;
     }
+    if (!customerPhone) {
+      toast.error("Customer phone is required so the client portal can be created");
+      return;
+    }
 
     const selectedMechanic = mechRoster.find((mechanic) => mechanic.id === assignedMechId) ?? null;
     const vehicleLabel = [resolvedMake, resolvedModel].filter(Boolean).join(" ") || null;
+    const resolvedFuelType = fuelType !== "unknown"
+      ? fuelType
+      : ((previousJob?.fuel_type as "petrol" | "diesel" | "unknown" | null) ?? "unknown");
+    const resolvedVehicleColor = (vehicleColor.trim() || aiResult?.color || previousJob?.vehicle_color || "").trim();
     const resolvedServiceType = isReturnedMode && serviceType === "mechanical" && previousJob?.service_type
       ? previousJob.service_type
       : serviceType;
@@ -813,16 +829,19 @@ function CheckInForm({
       let vehicleId: string | null = null;
       const { data: existingVehicle } = await supabase
         .from("vehicles")
-        .select("id")
+        .select("id, fuel_type, color")
         .eq("plate", normalizedPlate)
         .limit(1)
         .maybeSingle();
+      const existingVehicleFuel = (existingVehicle as any)?.fuel_type as string | null;
+      const existingVehicleColor = (existingVehicle as any)?.color as string | null;
       const vehiclePayload = {
         client_id: clientId,
         plate: normalizedPlate,
         make: resolvedMake || null,
         model: resolvedModel || null,
-        color: aiResult?.color ?? null,
+        color: resolvedVehicleColor || existingVehicleColor || null,
+        fuel_type: resolvedFuelType !== "unknown" ? resolvedFuelType : existingVehicleFuel ?? null,
         detected_by_ai: Boolean(aiResult),
       };
 
@@ -847,8 +866,10 @@ function CheckInForm({
         assigned_mechanic_id: assignedMechId || null,
         complaint: resolvedComplaint || null,
         reported_problem: resolvedComplaint || null,
+        fuel_type: resolvedFuelType !== "unknown" ? resolvedFuelType : existingVehicleFuel ?? null,
         service_type: resolvedServiceType,
         paint_color_code: resolvedPaintCode,
+        vehicle_color: resolvedVehicleColor || existingVehicleColor || null,
         estimate: 0,
         has_insurance: resolvedHasInsurance,
         insurance_company: resolvedInsuranceCompany,
@@ -860,8 +881,19 @@ function CheckInForm({
         return_visit_notes: showReturnVisitFields ? (returnVisitNotes.trim() || null) : null,
         status: "diagnosis",
         created_by: userId ?? null,
-      }).select("id").single();
+      }).select("id, job_no").single();
       if (jobError) throw jobError;
+
+      const { error: portalError } = await invokeEdgeFunction("ensure-client-portal-user", {
+        body: {
+          plate: normalizedPlate,
+          phone: customerPhone,
+          client_id: clientId,
+          vehicle_id: vehicleId,
+          customer_name: customerName || normalizedPlate,
+        },
+      });
+      if (portalError) throw portalError;
 
       if (job?.id && assignedMechId) {
         const { error } = await supabase.from("job_mechanics").upsert(
@@ -890,6 +922,16 @@ function CheckInForm({
           const { error } = await supabase.from("job_card_photos").insert(rows);
           if (error) throw error;
         }
+      }
+
+      if (job?.id) {
+        await supabase.rpc("notify_client_portal" as any, {
+          _job_id: job.id,
+          _title: "Vehicle admitted",
+          _body: `${normalizedPlate} has been admitted and job card ${job.job_no} is now live in your portal.`,
+          _kind: "job_created",
+          _link: "/client",
+        });
       }
 
       toast.success("Job card created — number assigned");
@@ -985,6 +1027,18 @@ function CheckInForm({
             </div>
           </div>
         )}
+        {isReturnedMode && (
+          <>
+            <div className="space-y-2">
+              <Label>Customer name</Label>
+              <Input placeholder="Customer name" value={customer} onChange={(e) => setCustomer(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Phone</Label>
+              <Input placeholder="+254 7XX XXX XXX" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </div>
+          </>
+        )}
         {!isReturnedMode && (
           <>
             <div className="space-y-2">
@@ -1040,6 +1094,28 @@ function CheckInForm({
             </div>
           </>
         )}
+        <div className="space-y-2">
+          <Label>Fuel type</Label>
+          <Select value={fuelType} onValueChange={(value: "petrol" | "diesel" | "unknown") => setFuelType(value)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unknown">Not set yet</SelectItem>
+              <SelectItem value="petrol">Petrol</SelectItem>
+              <SelectItem value="diesel">Diesel</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-2">
+          <Label>Vehicle colour</Label>
+          <Input
+            placeholder="Silver, white, black..."
+            value={vehicleColor}
+            onChange={(e) => setVehicleColor(e.target.value)}
+          />
+          {aiResult?.color && (
+            <p className="text-[11px] text-muted-foreground">AI saw: {aiResult.color}</p>
+          )}
+        </div>
         <div className="space-y-2">
           <Label>Assigned mechanic</Label>
           <Select value={assignedMechId || "unassigned"} onValueChange={(value) => setAssignedMechId(value === "unassigned" ? "" : value)}>
@@ -1276,8 +1352,6 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const [paymentBypassReason, setPaymentBypassReason] = useState("");
   const [paymentBypassAuthorizedBy, setPaymentBypassAuthorizedBy] = useState("");
   const [jobPhotos, setJobPhotos] = useState<Array<{ kind: string; url: string }>>([]);
-  const [serviceKitFuel, setServiceKitFuel] = useState<"petrol" | "diesel">("petrol");
-  const [serviceKitSelection, setServiceKitSelection] = useState<string[]>([]);
   const financialSyncQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [mechanicsList, setMechanicsList] = useState<Array<{ id: string; name: string; phone: string | null; specialties: string[] }>>([]);
   const [forwardOpen, setForwardOpen] = useState(false);
@@ -1410,6 +1484,20 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
   if (!job) return <p className="text-center text-muted-foreground py-8">Loading…</p>;
 
+  const notifyClient = async (title: string, body: string, kind: string, link = "/client") => {
+    try {
+      await supabase.rpc("notify_client_portal" as any, {
+        _job_id: jobId,
+        _title: title,
+        _body: body,
+        _kind: kind,
+        _link: link,
+      });
+    } catch {
+      // Client notifications should never block workshop operations.
+    }
+  };
+
   const partsCost = partsUsed.reduce((s, m) => s + (Number(m.buy_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const partsRevenue = partsUsed.reduce((s, m) => s + (Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const pettyTotal = pettyForJob.reduce((s, e) => s + Number(e.amount ?? 0), 0);
@@ -1425,7 +1513,6 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     || (payerType === "insurance" ? (job.insurance_company ?? "") : (job.customer_name ?? ""))
   ).trim();
   const leadSourceLabel = job.lead_source ? (LEAD_SOURCE_LABELS[job.lead_source] ?? job.lead_source) : null;
-  const serviceKitItems = SERVICE_KIT_PRESETS[serviceKitFuel];
 
   // ===== STRICT DOC GATING (real garage flow) =====
   // Quotation: available once we've moved past "diagnosis" (so a diagnosis is on file)
@@ -1679,38 +1766,6 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       unit_price: inStock ? Number(part.unit_price || 0) : 0,
     });
     if (!inStock) toast.message(`${part.name} is out of stock — set price manually`);
-  };
-
-  const addServiceKitItems = async () => {
-    if (serviceKitSelection.length === 0) {
-      toast.error("Pick at least one service kit item");
-      return;
-    }
-    const payload = serviceKitSelection.map((item, index) => {
-      const matchedPart = partsCatalog.find((part) => part.name.toLowerCase() === item.toLowerCase());
-      return {
-        job_id: jobId,
-        kind: "part",
-        source: "service_kit",
-        position: lineItems.length + index,
-        description: item,
-        qty: 1,
-        unit_price: Number(matchedPart?.unit_price || 0),
-        part_id: matchedPart?.id ?? null,
-      };
-    });
-
-    const { data, error } = await supabase.from("job_line_items").insert(payload).select();
-    if (error) {
-      toast.error(friendlyErrorMessage(error, "Could not add the service kit items."));
-      return;
-    }
-
-    const next = [...lineItems, ...(data ?? [])];
-    setLineItems(next);
-    setServiceKitSelection([]);
-    await persistFinancialSnapshot({ rows: next, silent: true });
-    toast.success("Service kit items added");
   };
 
   const removeIssuedPart = async (movement: any) => {
@@ -2827,44 +2882,6 @@ Golden Automotive Solutions`);
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => addLine("part")}><Plus className="h-3 w-3 mr-1" />Part</Button>
                 <Button size="sm" variant="outline" onClick={() => addLine("labour")}><Plus className="h-3 w-3 mr-1" />Labour</Button>
-              </div>
-            </div>
-
-            <div className="mb-4 rounded-lg border bg-muted/20 p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h4 className="font-medium">Service kit</h4>
-                  <p className="text-[11px] text-muted-foreground">Choose petrol or diesel, then add one or several kit items straight into the parts tiles.</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Select value={serviceKitFuel} onValueChange={(value) => setServiceKitFuel(value as "petrol" | "diesel")}>
-                    <SelectTrigger className="w-[150px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="petrol">Petrol car</SelectItem>
-                      <SelectItem value="diesel">Diesel car</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Button size="sm" variant="outline" onClick={addServiceKitItems}>
-                    <Plus className="h-3 w-3 mr-1" />Add selected
-                  </Button>
-                </div>
-              </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {serviceKitItems.map((item) => (
-                  <label key={`${serviceKitFuel}-${item}`} className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={serviceKitSelection.includes(item)}
-                      onChange={(e) => setServiceKitSelection((current) => (
-                        e.target.checked ? [...current, item] : current.filter((value) => value !== item)
-                      ))}
-                      className="h-4 w-4 accent-primary"
-                    />
-                    <span>{item}</span>
-                  </label>
-                ))}
               </div>
             </div>
 

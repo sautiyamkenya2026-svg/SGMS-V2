@@ -122,6 +122,51 @@ export type Database = {
         }
         Relationships: []
       }
+      client_portal_accounts: {
+        Row: {
+          client_id: string | null
+          created_at: string
+          phone: string | null
+          plate: string
+          updated_at: string
+          user_id: string
+          vehicle_id: string | null
+        }
+        Insert: {
+          client_id?: string | null
+          created_at?: string
+          phone?: string | null
+          plate: string
+          updated_at?: string
+          user_id: string
+          vehicle_id?: string | null
+        }
+        Update: {
+          client_id?: string | null
+          created_at?: string
+          phone?: string | null
+          plate?: string
+          updated_at?: string
+          user_id?: string
+          vehicle_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_portal_accounts_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_portal_accounts_vehicle_id_fkey"
+            columns: ["vehicle_id"]
+            isOneToOne: false
+            referencedRelation: "vehicles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       gate_pass_requests: {
         Row: {
           approved_at: string | null
@@ -652,6 +697,7 @@ export type Database = {
           estimate: number
           feedback_rating: number | null
           financial_summary: string | null
+          fuel_type: string | null
           gate_pass_issued: boolean
           has_insurance: boolean
           id: string
@@ -686,6 +732,7 @@ export type Database = {
           status: string
           updated_at: string
           vehicle_id: string | null
+          vehicle_color: string | null
           vehicle_label: string | null
           work_performed: string | null
         }
@@ -716,6 +763,7 @@ export type Database = {
           estimate?: number
           feedback_rating?: number | null
           financial_summary?: string | null
+          fuel_type?: string | null
           gate_pass_issued?: boolean
           has_insurance?: boolean
           id?: string
@@ -750,6 +798,7 @@ export type Database = {
           status?: string
           updated_at?: string
           vehicle_id?: string | null
+          vehicle_color?: string | null
           vehicle_label?: string | null
           work_performed?: string | null
         }
@@ -780,6 +829,7 @@ export type Database = {
           estimate?: number
           feedback_rating?: number | null
           financial_summary?: string | null
+          fuel_type?: string | null
           gate_pass_issued?: boolean
           has_insurance?: boolean
           id?: string
@@ -814,6 +864,7 @@ export type Database = {
           status?: string
           updated_at?: string
           vehicle_id?: string | null
+          vehicle_color?: string | null
           vehicle_label?: string | null
           work_performed?: string | null
         }
@@ -1954,6 +2005,7 @@ export type Database = {
         | "gateman"
         | "manager"
         | "director"
+        | "client"
       movement_type:
         | "restock"
         | "sale"
@@ -2096,6 +2148,7 @@ export const Constants = {
         "gateman",
         "manager",
         "director",
+        "client",
       ],
       movement_type: [
         "restock",

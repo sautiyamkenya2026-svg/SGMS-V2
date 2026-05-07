@@ -52,13 +52,13 @@ export function Login() {
           </div>
           <div className="space-y-2 text-center lg:text-left">
             <h2 className="text-2xl font-bold tracking-tight">Welcome back</h2>
-            <p className="text-sm text-muted-foreground">Sign in to manage your garage. Accounts are created by an administrator.</p>
+            <p className="text-sm text-muted-foreground">Staff sign in with email. Clients sign in with plate number and phone password.</p>
           </div>
 
           <form onSubmit={submit} className="space-y-4 mt-4">
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+              <Label htmlFor="email">Email or plate</Label>
+              <Input id="email" type="text" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="staff@email.com or KCA123A" required />
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
@@ -68,7 +68,7 @@ export function Login() {
               {busy ? "Please wait…" : "Sign in"}
             </Button>
             <p className="text-xs text-center text-muted-foreground pt-2">
-              Don't have an account? Ask your administrator to create one for you.
+              Staff accounts are created by an administrator. Client accounts are created automatically when your job card is opened.
             </p>
           </form>
         </div>

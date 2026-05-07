@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, Users, ClipboardList, DoorOpen, Fingerprint, Battery } from "lucide-react";
+import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, Users, ClipboardList, DoorOpen, Fingerprint, Battery, CarFront } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter, useSidebar,
@@ -13,6 +13,7 @@ type Item = { title: string; url: string; icon: any; roles?: Role[] };
 
 const items: Item[] = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard, roles: ["admin","reception","manager","director","super_admin","storekeeper"] },
+  { title: "Client Portal", url: "/client", icon: CarFront, roles: ["client"] },
   { title: "Jobs", url: "/jobs", icon: Wrench, roles: ["admin","reception","manager","director","super_admin","mechanic"] },
   { title: "Invoices", url: "/invoices", icon: FileText, roles: ["admin","reception","manager","director","super_admin"] },
   { title: "Stock", url: "/stock", icon: Boxes, roles: ["admin","storekeeper","reception","manager","director","super_admin"] },

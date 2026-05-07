@@ -22,6 +22,7 @@ import Users from "./pages/Users.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import ClientApproval from "./pages/ClientApproval.tsx";
 import Attendance from "./pages/Attendance.tsx";
+import ClientPortal from "./pages/ClientPortal.tsx";
 import { RoleGuard } from "./components/RoleGuard";
 
 const FIN = ["admin","reception","manager","director","super_admin"] as const;
@@ -55,6 +56,7 @@ const App = () => (
               <Route path="/requests" element={<RoleGuard allow={[...REQS]}><Requests /></RoleGuard>} />
               <Route path="/gate" element={<RoleGuard allow={[...GATE]}><Gate /></RoleGuard>} />
               <Route path="/attendance" element={<Attendance />} />
+              <Route path="/client" element={<RoleGuard allow={["client"]}><ClientPortal /></RoleGuard>} />
               <Route path="/users" element={<RoleGuard allow={[...FULL]}><Users /></RoleGuard>} />
               <Route path="/reports" element={<RoleGuard allow={[...REPS]}><Reports /></RoleGuard>} />
               <Route path="/tronix" element={<Tronix />} />
@@ -69,4 +71,3 @@ const App = () => (
 );
 
 export default App;
-
