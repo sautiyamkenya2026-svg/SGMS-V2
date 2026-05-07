@@ -29,7 +29,7 @@ import {
   storeInvoiceDocumentPdf,
   storeJobCardPdf,
 } from "@/lib/document-storage";
-import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { isEdgeFunctionUnavailable, readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tree";
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
@@ -704,6 +704,10 @@ function CheckInForm({
     try {
       const { data, error, response } = await invokeEdgeFunction("vehicle-vision", { body: { images } });
       if (error || (data as any)?.error) {
+        if (isEdgeFunctionUnavailable(error, response)) {
+          toast.error("Vehicle photo AI is offline right now. You can continue the check-in manually.");
+          return;
+        }
         const message = (data as any)?.error
           ?? await readEdgeFunctionErrorMessage(error, response, "AI failed");
         toast.error(message);
@@ -916,7 +920,7 @@ function CheckInForm({
       }).select("id, job_no").single();
       if (jobError) throw jobError;
 
-      const { error: portalError } = await invokeEdgeFunction("ensure-client-portal-user", {
+      const { error: portalError, response: portalResponse } = await invokeEdgeFunction("ensure-client-portal-user", {
         body: {
           plate: normalizedPlate,
           phone: customerPhone,
@@ -925,7 +929,19 @@ function CheckInForm({
           customer_name: customerName || normalizedPlate,
         },
       });
-      if (portalError) throw portalError;
+      if (portalError) {
+        if (isEdgeFunctionUnavailable(portalError, portalResponse)) {
+          toast.warning("Job card saved, but client portal setup is offline right now.");
+        } else {
+          toast.warning(
+            await readEdgeFunctionErrorMessage(
+              portalError,
+              portalResponse,
+              "Job card saved, but client portal setup could not finish.",
+            ),
+          );
+        }
+      }
 
       if (job?.id && assignedMechId) {
         const { error } = await supabase.from("job_mechanics").upsert(
@@ -1527,6 +1543,13 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     }
   };
   useEffect(() => { load(); }, [jobId, canSeePrivateJobPhotos]);
+  const isClosedJob = job?.status === "closed";
+  const readOnlyPanelClass = isClosedJob ? "pointer-events-none select-none opacity-60" : "";
+  const ensureJobEditable = () => {
+    if (!isClosedJob) return true;
+    toast.error("This job is closed and now read-only.");
+    return false;
+  };
 
   if (!job) return <p className="text-center text-muted-foreground py-8">Loading…</p>;
 
@@ -1686,6 +1709,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
   // ------- AI: regenerate diagnostic summary + recommended parts ---------
   const runAiSummary = async () => {
+    if (!ensureJobEditable()) return;
     setAiBusy(true);
     try {
         const diagnosticFindings = findings.filter((f: any) => f.status && f.status !== "ok" && !isServiceCategory(f.category));
@@ -1699,6 +1723,10 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
         },
       });
         if (error) {
+          if (isEdgeFunctionUnavailable(error, response)) {
+            toast.error("Diagnosis AI is offline right now. You can still continue this job manually.");
+            return;
+          }
           throw new Error(await readEdgeFunctionErrorMessage(error, response, "AI failed"));
         }
         const recParts = (data?.parts ?? []).map((p: any) => ({ ...p, requested: false }));
@@ -1743,6 +1771,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
   // Request a recommended part with one click
   const requestRecommendedPart = async (idx: number) => {
+    if (!ensureJobEditable()) return;
     const list = [...(job.recommended_parts ?? [])];
     const item = list[idx];
     if (!item || item.requested) return;
@@ -1758,6 +1787,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   };
 
   const removeRecommendedPart = async (idx: number) => {
+    if (!ensureJobEditable()) return;
     const list = [...(job.recommended_parts ?? [])];
     list.splice(idx, 1);
     await supabase.from("jobs").update({ recommended_parts: list as any }).eq("id", jobId);
@@ -1766,6 +1796,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
   // ===== Line-item editor =====
   const addLine = async (kind: "part" | "labour") => {
+    if (!ensureJobEditable()) return;
     const pos = lineItems.length;
     const { data, error } = await supabase.from("job_line_items").insert({
       job_id: jobId, kind, source: "manual", position: pos,
@@ -1781,6 +1812,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     }
   };
   const updateLine = async (id: string, patch: any) => {
+    if (!ensureJobEditable()) return;
     const next = lineItems.map((l) => l.id === id ? { ...l, ...patch } : l);
     setLineItems(next);
     const { error } = await supabase.from("job_line_items").update(patch).eq("id", id);
@@ -1791,6 +1823,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     }
   };
   const removeLine = async (id: string) => {
+    if (!ensureJobEditable()) return false;
     const next = lineItems.filter((l) => l.id !== id);
     const { error } = await supabase.from("job_line_items").delete().eq("id", id);
     if (error) {
@@ -1803,6 +1836,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     }
   };
   const pickPartForLine = async (id: string, partId: string) => {
+    if (!ensureJobEditable()) return;
     const part = partsCatalog.find((p) => p.id === partId);
     if (!part) return;
     const inStock = (partStock[partId] ?? 0) > 0;
@@ -1815,6 +1849,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   };
 
   const removeIssuedPart = async (movement: any) => {
+    if (!ensureJobEditable()) return;
     const movementLabel = movement.parts?.name ?? "this issued part";
     if (!window.confirm(`Remove ${movementLabel} from this job and return it to stock?`)) return;
 
@@ -2130,6 +2165,10 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     silent?: boolean;
   } = {}) => {
     if (!job) return null;
+    if (job.status === "closed") {
+      if (!silent) toast.error("This job is closed and now read-only.");
+      return null;
+    }
     const subtotal = calculateLineSubtotal(rows);
     const total = calculateLineTotal(rows, discount);
     const patch: any = {
@@ -2188,6 +2227,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   };
 
   const markPaid = async () => {
+    if (!ensureJobEditable()) return;
     if (!canInvoice) { toast.error("Mark the job complete before recording payment"); return; }
     const now = new Date().toISOString();
     if (paymentBypass) {
@@ -2239,6 +2279,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
   // ===== Approval flow: send the client a feedback link =====
   const sendForApproval = async () => {
+    if (!ensureJobEditable()) return;
     if (!workPerformed.trim()) {
       toast.error("Describe what you did under 'Work performed' first");
       return;
@@ -2260,6 +2301,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
 
   // Ensure the job has an approval token; mint one if missing so QR / link / email all work.
   const ensureApprovalToken = async (): Promise<string | null> => {
+    if (!ensureJobEditable()) return null;
     if (job?.client_feedback_token) return job.client_feedback_token;
     const newToken = (crypto as any)?.randomUUID
       ? (crypto as any).randomUUID().replace(/-/g, "")
@@ -2348,6 +2390,7 @@ Golden Automotive Solutions`);
   };
 
   const verifyClientCode = async () => {
+    if (!ensureJobEditable()) return;
     if (!enteredCode.trim()) { toast.error("Enter the 6-digit code from the client"); return; }
     setVerifying(true);
     const { data, error } = await supabase.rpc("verify_diagnosis_code", { _job_id: jobId, _code: enteredCode.trim() });
@@ -2362,6 +2405,7 @@ Golden Automotive Solutions`);
 
   // ===== Internal approval: mechanic / manager / director confirms parts can be fitted =====
   const approvePartsForFitting = async () => {
+    if (!ensureJobEditable()) return;
     const { data, error } = await supabase.rpc("approve_parts_for_fitting", { _job_id: jobId });
     if (error || !data) { toast.error(error?.message ?? "Could not approve"); return; }
     toast.success("Parts approved — job moved to repair");
@@ -2382,6 +2426,7 @@ Golden Automotive Solutions`);
   };
 
   const forwardToMechanic = async () => {
+    if (!ensureJobEditable()) return;
     if (!forwardMechId) { toast.error("Pick a mechanic"); return; }
     const m = mechanicsList.find(x => x.id === forwardMechId);
     const newStatus: JobStatus = job.status === "diagnosed" || job.status === "parts" ? "repair" : job.status;
@@ -2425,6 +2470,7 @@ Golden Automotive Solutions`);
   };
 
   const changeStatus = async (next: JobStatus) => {
+    if (!ensureJobEditable()) return;
     const isOverrideMove = statusOverride && !allowedNext.includes(next);
     const movingBackward = STATUS_ORDER[next] < STATUS_ORDER[job.status];
 
@@ -2468,50 +2514,59 @@ Golden Automotive Solutions`);
       <div className="flex items-center justify-between">
         <Button variant="ghost" onClick={onBack}><ArrowLeft className="h-4 w-4 mr-2" />Back to jobs</Button>
         <div className="flex gap-2 flex-wrap">
-          <Button size="sm" variant="outline" onClick={() => setInspectOpen(true)}>
+          <Button size="sm" variant="outline" onClick={() => setInspectOpen(true)} disabled={isClosedJob}>
             <Stethoscope className="h-4 w-4 mr-2" />Do inspection
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>
+          <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)} disabled={isClosedJob}>
             <Package className="h-4 w-4 mr-2" />Request part
           </Button>
           {(canManageJob || job.status === "diagnosed" || job.status === "parts" || job.status === "repair") && (
-            <Button size="sm" variant="outline" onClick={() => setForwardOpen(true)}>
+            <Button size="sm" variant="outline" onClick={() => setForwardOpen(true)} disabled={isClosedJob}>
               <Send className="h-4 w-4 mr-2" />Forward to mechanic
             </Button>
           )}
           {(job.status === "diagnosed" || job.status === "diagnosis_approval") && (
             <>
-              <Button size="sm" variant="outline" onClick={sendDiagnosisEmail}>
+              <Button size="sm" variant="outline" onClick={sendDiagnosisEmail} disabled={isClosedJob}>
                 <Mail className="h-4 w-4 mr-2" />Email diagnosis
               </Button>
-              <Button size="sm" variant="outline" onClick={sendDiagnosisWhatsApp}>
+              <Button size="sm" variant="outline" onClick={sendDiagnosisWhatsApp} disabled={isClosedJob}>
                 <MessageCircle className="h-4 w-4 mr-2" />WhatsApp
               </Button>
-              <Button size="sm" variant="outline" onClick={showApprovalQR}>
+              <Button size="sm" variant="outline" onClick={showApprovalQR} disabled={isClosedJob}>
                 <QrCode className="h-4 w-4 mr-2" />Generate QR
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setCodeOpen(true)}>
+              <Button size="sm" variant="outline" onClick={() => setCodeOpen(true)} disabled={isClosedJob}>
                 <KeyRound className="h-4 w-4 mr-2" />Enter approval code
               </Button>
             </>
           )}
           {job.status === "parts_approval" && canApproveFitting && (
-            <Button size="sm" className="bg-gradient-primary" onClick={approvePartsForFitting}>
+            <Button size="sm" className="bg-gradient-primary" onClick={approvePartsForFitting} disabled={isClosedJob}>
               <ShieldCheck className="h-4 w-4 mr-2" />Approve parts &amp; start fitting
             </Button>
           )}
           {job.status === "repair" && (
-            <Button size="sm" variant="outline" onClick={sendForApproval}>
+            <Button size="sm" variant="outline" onClick={sendForApproval} disabled={isClosedJob}>
               <Link2 className="h-4 w-4 mr-2" />Send to client for final approval
             </Button>
           )}
           {job.status === "awaiting_approval" && (
-            <Button size="sm" variant="outline" onClick={copyApprovalLink}>
+            <Button size="sm" variant="outline" onClick={copyApprovalLink} disabled={isClosedJob}>
               <Copy className="h-4 w-4 mr-2" />Copy approval link
             </Button>
           )}
         </div>
       </div>
+
+      {isClosedJob && (
+        <Card className="border-muted bg-muted/30 p-4">
+          <p className="text-sm font-medium">Closed jobs are read-only.</p>
+          <p className="text-xs text-muted-foreground">
+            This car can still be viewed, but inspection, status changes, billing edits, and all other actions are locked.
+          </p>
+        </Card>
+      )}
 
       {previous && (
         <Card className="p-4 border-amber-500/40 bg-amber-500/5">
@@ -2547,7 +2602,7 @@ Golden Automotive Solutions`);
                   <Select
                     value={job.status}
                     onValueChange={(v) => changeStatus(v as JobStatus)}
-                    disabled={savingStatus || statusOptions.length === 0}
+                    disabled={isClosedJob || savingStatus || statusOptions.length === 0}
                   >
                     <SelectTrigger className="h-7 w-[220px] text-xs">
                       <SelectValue>{STATUS_LABEL[job.status]}</SelectValue>
@@ -2566,6 +2621,7 @@ Golden Automotive Solutions`);
                       type="checkbox"
                       checked={statusOverride}
                       onChange={(e) => setStatusOverride(e.target.checked)}
+                      disabled={isClosedJob}
                       className="h-3 w-3 accent-primary"
                     />
                     Override
@@ -2639,7 +2695,7 @@ Golden Automotive Solutions`);
         </TabsList>
 
         {/* ====================== OVERVIEW ====================== */}
-        <TabsContent value="overview" className="mt-4 grid gap-5 lg:grid-cols-3">
+        <TabsContent value="overview" className={`mt-4 grid gap-5 lg:grid-cols-3 ${readOnlyPanelClass}`}>
           <Card className="p-5 lg:col-span-2 space-y-4">
             <div>
               <h3 className="font-semibold flex items-center gap-2 mb-2"><FileText className="h-4 w-4 text-primary" />Reported problem</h3>
@@ -2788,7 +2844,7 @@ Golden Automotive Solutions`);
         </TabsContent>
 
         {/* ====================== DIAGNOSIS ====================== */}
-        <TabsContent value="diagnosis" className="mt-4 space-y-5">
+        <TabsContent value="diagnosis" className={`mt-4 space-y-5 ${readOnlyPanelClass}`}>
           <Card className="p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold flex items-center gap-2"><Sparkles className="h-4 w-4 text-accent" />AI diagnostic summary</h3>
@@ -2918,7 +2974,7 @@ Golden Automotive Solutions`);
         </TabsContent>
 
         {/* ====================== FINANCIAL ====================== */}
-        <TabsContent value="financial" className="mt-4 space-y-5">
+        <TabsContent value="financial" className={`mt-4 space-y-5 ${readOnlyPanelClass}`}>
           <Card className="p-5">
             <div className="flex items-center justify-between mb-3">
               <div>
@@ -3101,7 +3157,7 @@ Golden Automotive Solutions`);
         </TabsContent>
 
         {/* ====================== DOCUMENTS ====================== */}
-        <TabsContent value="documents" className="mt-4">
+        <TabsContent value="documents" className={`mt-4 ${readOnlyPanelClass}`}>
           <Card className="p-5">
             <h3 className="font-semibold mb-1">Stage-gated documents</h3>
             <p className="text-xs text-muted-foreground mb-4">

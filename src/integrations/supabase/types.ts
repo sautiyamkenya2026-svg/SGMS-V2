@@ -1300,6 +1300,39 @@ export type Database = {
         }
         Relationships: []
       }
+      attendance_exceptions: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          day: string
+          id: string
+          reason: string
+          updated_at: string
+          updated_by: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          day: string
+          id?: string
+          reason: string
+          updated_at?: string
+          updated_by?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          day?: string
+          id?: string
+          reason?: string
+          updated_at?: string
+          updated_by?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       staff_attendance: {
         Row: {
           created_at: string
@@ -1307,6 +1340,9 @@ export type Database = {
           event: string
           id: string
           method: string
+          recorded_by_name: string | null
+          recorded_by_role: string | null
+          recorded_by_user_id: string | null
           user_id: string
         }
         Insert: {
@@ -1315,6 +1351,9 @@ export type Database = {
           event: string
           id?: string
           method?: string
+          recorded_by_name?: string | null
+          recorded_by_role?: string | null
+          recorded_by_user_id?: string | null
           user_id: string
         }
         Update: {
@@ -1323,6 +1362,45 @@ export type Database = {
           event?: string
           id?: string
           method?: string
+          recorded_by_name?: string | null
+          recorded_by_role?: string | null
+          recorded_by_user_id?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      staff_payroll_rates: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          currency: string
+          id: string
+          month: string
+          monthly_salary: number
+          updated_at: string
+          updated_by: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          currency?: string
+          id?: string
+          month: string
+          monthly_salary?: number
+          updated_at?: string
+          updated_by?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          currency?: string
+          id?: string
+          month?: string
+          monthly_salary?: number
+          updated_at?: string
+          updated_by?: string | null
           user_id?: string
         }
         Relationships: []

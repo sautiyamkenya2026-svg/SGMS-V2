@@ -13,6 +13,7 @@ import { Bar, BarChart, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGri
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { toDateValue, toLocalDateValue } from "@/lib/date-values";
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
 
 interface JobLookup {
@@ -28,7 +29,7 @@ interface JobLookup {
 }
 
 const fmt = (n: number) => `KSh ${Math.round(n).toLocaleString()}`;
-const dayKey = (iso: string) => new Date(iso).toISOString().slice(0, 10);
+const dayKey = (iso: string) => toDateValue(iso);
 const PAYMENT_MODE_LABELS: Record<string, string> = {
   cash: "Cash",
   mpesa: "M-PESA",
@@ -37,6 +38,7 @@ const PAYMENT_MODE_LABELS: Record<string, string> = {
   cheque: "Cheque",
   unspecified: "Unspecified",
 };
+const PAYMENT_MODE_ORDER = ["cash", "mpesa", "bank", "card", "cheque", "unspecified"] as const;
 const netInvoiceAmount = (invoice: { amount?: number; discount?: number }) =>
   Math.max(0, Number(invoice.amount || 0) - Number(invoice.discount || 0));
 const invoiceOutstandingAmount = (invoice: { doc_type?: string; amount?: number; amount_paid?: number; discount?: number }) =>
@@ -98,7 +100,7 @@ function FinancialTab() {
   useEffect(() => {
     (async () => {
       const sinceIso = new Date(Date.now() - 21 * 24 * 3600 * 1000).toISOString();
-      const sinceDay = sinceIso.slice(0, 10);
+      const sinceDay = toDateValue(sinceIso);
       const [{ data: docRows }, { data: mv }, { data: pc }] = await Promise.all([
         supabase.from("invoices").select("id, job_id, plate, invoice_no, doc_type, amount, amount_paid, payment_mode, date, updated_at, created_at, discount").limit(1000),
         supabase.from("stock_movements").select("id, reference, created_at, qty, buy_price, sell_price, unit_price, type").gte("created_at", sinceIso).eq("type", "sale"),
@@ -116,7 +118,7 @@ function FinancialTab() {
     const paymentModeMap = new Map<string, { key: string; label: string; amount: number; count: number }>();
     const days: string[] = [];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 24 * 3600 * 1000).toISOString().slice(0, 10);
+      const d = toLocalDateValue(new Date(Date.now() - i * 24 * 3600 * 1000));
       days.push(d);
       map.set(d, { day: d.slice(5), parts: 0, billed: 0, collected: 0 });
     }
@@ -151,7 +153,7 @@ function FinancialTab() {
           paymentModeMap.set(key, current);
         }
       }
-      const stamp = doc.updated_at ?? doc.date;
+      const stamp = doc.updated_at ?? doc.created_at ?? doc.date;
       if (!stamp) continue;
       const d = dayKey(stamp);
       const row = map.get(d);
@@ -170,7 +172,10 @@ function FinancialTab() {
     }
     const finalInvoices = documents.filter((doc) => doc.doc_type === "invoice");
     const chart = days.map(d => map.get(d)!);
-    const paymentModes = Array.from(paymentModeMap.values()).sort((a, b) => b.amount - a.amount);
+    const paymentModes = PAYMENT_MODE_ORDER.map((key) => {
+      const current = paymentModeMap.get(key);
+      return current ?? { key, label: PAYMENT_MODE_LABELS[key], amount: 0, count: 0 };
+    });
     return {
       chart,
       totals: {
@@ -240,24 +245,20 @@ function FinancialTab() {
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="font-semibold">Payments by method</h3>
-            <p className="text-xs text-muted-foreground">Collected money split by the payment mode saved on deposit invoices and receipts.</p>
+            <h3 className="font-semibold">Collections by method</h3>
+            <p className="text-xs text-muted-foreground">Cash, M-PESA, bank, card, cheque, and unspecified totals from recorded receipts and deposits.</p>
           </div>
           <Badge variant="outline">{totals.paymentModes.length} method{totals.paymentModes.length === 1 ? "" : "s"}</Badge>
         </div>
-        {totals.paymentModes.length === 0 ? (
-          <p className="mt-4 text-sm text-muted-foreground">No recorded payments yet.</p>
-        ) : (
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            {totals.paymentModes.map((mode) => (
-              <div key={mode.key} className="rounded-md border bg-muted/20 p-4">
-                <p className="text-xs uppercase text-muted-foreground">{mode.label}</p>
-                <p className="mt-1 text-2xl font-bold">{fmt(mode.amount)}</p>
-                <p className="text-[11px] text-muted-foreground">{mode.count} payment entr{mode.count === 1 ? "y" : "ies"}</p>
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {totals.paymentModes.map((mode) => (
+            <div key={mode.key} className="rounded-md border bg-muted/20 p-4">
+              <p className="text-xs uppercase text-muted-foreground">{mode.label}</p>
+              <p className="mt-1 text-2xl font-bold">{fmt(mode.amount)}</p>
+              <p className="text-[11px] text-muted-foreground">{mode.count} payment entr{mode.count === 1 ? "y" : "ies"}</p>
+            </div>
+          ))}
+        </div>
       </Card>
 
       <div className="grid gap-4 md:grid-cols-2">

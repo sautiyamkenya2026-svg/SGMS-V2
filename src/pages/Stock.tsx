@@ -17,7 +17,7 @@ import { useAuth } from "@/lib/auth";
 import { friendlyErrorMessage } from "@/lib/app-error";
 import { canSeeCostPrices } from "@/lib/permissions";
 import { toast } from "@/hooks/use-toast";
-import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { isEdgeFunctionUnavailable, readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 
 type Location = { id: string; name: string; kind: string };
@@ -349,6 +349,14 @@ function AddPartDialog({ open, onClose, locationId, onDone }: {
         },
       });
       if (error || (data as any)?.error) {
+        if (isEdgeFunctionUnavailable(error, response)) {
+          toast({
+            title: "AI scan unavailable",
+            description: "The stock AI helper is offline right now. You can still key the stock intake manually.",
+            variant: "destructive",
+          });
+          return;
+        }
         const message = (data as any)?.error
           ?? await readEdgeFunctionErrorMessage(error, response, "AI scan failed.");
         toast({ title: "AI scan failed", description: friendlyErrorMessage(message, "AI scan failed."), variant: "destructive" });

@@ -23,6 +23,7 @@ import NotFound from "./pages/NotFound.tsx";
 import ClientApproval from "./pages/ClientApproval.tsx";
 import Attendance from "./pages/Attendance.tsx";
 import ClientPortal from "./pages/ClientPortal.tsx";
+import Payroll from "./pages/Payroll.tsx";
 import { RoleGuard } from "./components/RoleGuard";
 
 const FIN = ["admin","reception","manager","director","super_admin"] as const;
@@ -32,6 +33,8 @@ const TOOLS = ["admin","storekeeper","mechanic","manager","director","super_admi
 const REQS  = ["admin","reception","mechanic","storekeeper","manager","director","super_admin"] as const;
 const GATE  = ["admin","reception","gateman","manager","director","super_admin"] as const;
 const REPS  = ["admin","manager","director","super_admin"] as const;
+const ATTN  = ["admin","gateman","director","super_admin"] as const;
+const PAYRL = ["director","super_admin"] as const;
 
 const queryClient = new QueryClient();
 
@@ -55,7 +58,8 @@ const App = () => (
               <Route path="/tools" element={<RoleGuard allow={[...TOOLS]}><Tools /></RoleGuard>} />
               <Route path="/requests" element={<RoleGuard allow={[...REQS]}><Requests /></RoleGuard>} />
               <Route path="/gate" element={<RoleGuard allow={[...GATE]}><Gate /></RoleGuard>} />
-              <Route path="/attendance" element={<Attendance />} />
+              <Route path="/attendance" element={<RoleGuard allow={[...ATTN]}><Attendance /></RoleGuard>} />
+              <Route path="/payroll" element={<RoleGuard allow={[...PAYRL]}><Payroll /></RoleGuard>} />
               <Route path="/client" element={<RoleGuard allow={["client"]}><ClientPortal /></RoleGuard>} />
               <Route path="/users" element={<RoleGuard allow={[...FULL]}><Users /></RoleGuard>} />
               <Route path="/reports" element={<RoleGuard allow={[...REPS]}><Reports /></RoleGuard>} />

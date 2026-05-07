@@ -18,6 +18,8 @@ const CRITICAL: string[] = [
   "app_settings",
   "notifications",
   "staff_attendance",
+  "attendance_exceptions",
+  "staff_payroll_rates",
   "webauthn_credentials",
   "tronix_messages",
 ];

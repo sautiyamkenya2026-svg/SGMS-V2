@@ -17,6 +17,25 @@ export async function readEdgeFunctionErrorMessage(
   return fallback;
 }
 
+export function isEdgeFunctionUnavailable(error: unknown, response?: Response | null) {
+  const responseLike = response ?? getResponseFromError(error);
+  if (responseLike && [404, 502, 503, 504].includes(responseLike.status)) return true;
+
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : String(error ?? "");
+
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("edge function") ||
+    normalized.includes("failed to fetch") ||
+    normalized.includes("networkerror") ||
+    normalized.includes("function not found")
+  );
+}
+
 function getResponseFromError(error: unknown) {
   if (!error || typeof error !== "object") return null;
 

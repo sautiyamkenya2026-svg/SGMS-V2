@@ -15,7 +15,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { generatePettyCashReportPDF } from "@/lib/pdf-templates";
 import { useAuth } from "@/lib/auth";
-import { readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
+import { isEdgeFunctionUnavailable, readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
 
 type Entry = {
@@ -236,6 +236,14 @@ export default function PettyCash() {
         },
       });
       if (error || (data as any)?.error) {
+        if (isEdgeFunctionUnavailable(error, response)) {
+          toast({
+            title: "AI scan unavailable",
+            description: "The petty cash AI helper is offline right now. You can still fill the entry manually and save it.",
+            variant: "destructive",
+          });
+          return;
+        }
         const message = (data as any)?.error
           ?? await readEdgeFunctionErrorMessage(error, response, "AI scan failed.");
         toast({ title: "AI scan failed", description: message, variant: "destructive" });

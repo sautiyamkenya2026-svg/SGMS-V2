@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, Users, ClipboardList, DoorOpen, Fingerprint, Battery, CarFront } from "lucide-react";
+import { LayoutDashboard, Wrench, Package, Boxes, BarChart3, Settings, LogOut, FileText, Wallet, Building2, Sparkles, Hammer, Users, ClipboardList, DoorOpen, Fingerprint, Battery, CarFront, BadgeDollarSign } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, SidebarFooter, useSidebar,
@@ -22,7 +22,8 @@ const items: Item[] = [
   { title: "Petty Cash", url: "/petty-cash", icon: Wallet, roles: ["admin","reception","storekeeper","manager","director","super_admin"] },
   { title: "Requests", url: "/requests", icon: ClipboardList, roles: ["admin","reception","mechanic","storekeeper","manager","director","super_admin"] },
   { title: "Gate Control", url: "/gate", icon: DoorOpen, roles: ["admin","reception","gateman","manager","director","super_admin"] },
-  { title: "Attendance", url: "/attendance", icon: Fingerprint, roles: ["admin","reception","gateman","manager","director","super_admin"] },
+  { title: "Attendance", url: "/attendance", icon: Fingerprint, roles: ["admin","gateman","director","super_admin"] },
+  { title: "Payroll", url: "/payroll", icon: BadgeDollarSign, roles: ["director","super_admin"] },
   { title: "Reports", url: "/reports", icon: BarChart3, roles: ["admin","manager","director","super_admin"] },
   { title: "Tronix AI", url: "/tronix", icon: Sparkles, roles: ["admin","reception","manager","director","super_admin","mechanic","storekeeper"] },
   { title: "User Management", url: "/users", icon: Users, roles: ["admin","director","super_admin"] },

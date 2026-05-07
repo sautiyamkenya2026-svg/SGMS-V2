@@ -25,13 +25,14 @@ import {
 } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
 import { friendlyErrorMessage } from "@/lib/app-error";
-import { useAuth } from "@/lib/auth";
+import { toLocalDateValue, toLocalMonthValue } from "@/lib/date-values";
 import {
   closeReservedDocumentWindow,
   openStoredDocumentUrl,
   reserveDocumentWindow,
   storeGeneratedTextFile,
 } from "@/lib/document-storage";
+import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 
 type StaffRoleRow = {
@@ -46,6 +47,9 @@ type AttendanceRow = {
   method: string;
   device_label: string | null;
   created_at: string;
+  recorded_by_name: string | null;
+  recorded_by_role: string | null;
+  recorded_by_user_id: string | null;
 };
 
 type StaffProfileRow = {
@@ -56,18 +60,10 @@ type StaffProfileRow = {
 };
 
 type Staff = StaffProfileRow & {
+  roles: string[];
   role: string | null;
   last_event?: AttendanceRow | null;
 };
-
-function toLocalDateValue(date = new Date()) {
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 10);
-}
-
-function toLocalMonthValue(date = new Date()) {
-  return toLocalDateValue(date).slice(0, 7);
-}
 
 function csvEscape(value: string | null | undefined) {
   const text = String(value ?? "");
@@ -77,9 +73,10 @@ function csvEscape(value: string | null | undefined) {
 export default function Attendance() {
   const { user, hasRole } = useAuth();
   const allowed =
-    hasRole("reception") || hasRole("gateman") ||
-    hasRole("admin") || hasRole("super_admin") ||
-    hasRole("director") || hasRole("manager");
+    hasRole("gateman") ||
+    hasRole("admin") ||
+    hasRole("super_admin") ||
+    hasRole("director");
 
   const [q, setQ] = useState("");
   const [staff, setStaff] = useState<Staff[]>([]);
@@ -97,20 +94,17 @@ export default function Attendance() {
       supabase.from("user_roles").select("user_id, role"),
       supabase
         .from("staff_attendance")
-        .select("id, user_id, event, method, device_label, created_at")
+        .select("id, user_id, event, method, device_label, created_at, recorded_by_name, recorded_by_role, recorded_by_user_id")
         .order("created_at", { ascending: false })
         .limit(5000),
     ]);
 
     const typedRoles = (roles ?? []) as StaffRoleRow[];
     const typedLog = (log ?? []) as AttendanceRow[];
-    const roleMap = new Map<string, string>();
-    typedRoles.forEach((row) => roleMap.set(row.user_id, row.role));
-    const hiddenUserIds = new Set(
-      typedRoles
-        .filter((row) => row.role === "super_admin")
-        .map((row) => row.user_id),
-    );
+    const roleMap = new Map<string, string[]>();
+    typedRoles.forEach((row) => {
+      roleMap.set(row.user_id, [...(roleMap.get(row.user_id) ?? []), row.role]);
+    });
 
     const lastByUser = new Map<string, AttendanceRow>();
     typedLog.forEach((row) => {
@@ -119,14 +113,15 @@ export default function Attendance() {
 
     setStaff(
       ((profiles ?? []) as StaffProfileRow[])
-        .filter((profile) => !hiddenUserIds.has(profile.id))
+        .filter((profile) => !(roleMap.get(profile.id) ?? []).includes("client"))
         .map((profile) => ({
           ...profile,
-          role: roleMap.get(profile.id) ?? null,
+          roles: roleMap.get(profile.id) ?? [],
+          role: roleMap.get(profile.id)?.[0] ?? null,
           last_event: lastByUser.get(profile.id) ?? null,
         })),
     );
-    setEntries(typedLog.filter((entry) => !hiddenUserIds.has(entry.user_id)));
+    setEntries(typedLog.filter((entry) => !(roleMap.get(entry.user_id) ?? []).includes("client")));
     setLoading(false);
   };
 
@@ -148,7 +143,7 @@ export default function Attendance() {
     return staff.filter((member) =>
       member.display_name?.toLowerCase().includes(term) ||
       member.email?.toLowerCase().includes(term) ||
-      member.role?.toLowerCase().includes(term),
+      member.roles.some((role) => role.toLowerCase().includes(term)),
     );
   }, [staff, q]);
 
@@ -166,9 +161,11 @@ export default function Attendance() {
       return (
         member?.display_name?.toLowerCase().includes(term) ||
         member?.email?.toLowerCase().includes(term) ||
-        member?.role?.toLowerCase().includes(term) ||
+        member?.roles.some((role) => role.toLowerCase().includes(term)) ||
         entry.method.toLowerCase().includes(term) ||
-        entry.event.toLowerCase().includes(term)
+        entry.event.toLowerCase().includes(term) ||
+        entry.recorded_by_name?.toLowerCase().includes(term) ||
+        entry.recorded_by_role?.toLowerCase().includes(term)
       );
     });
   }, [dayFilter, entries, monthFilter, q, selectedUserId, staff]);
@@ -203,18 +200,25 @@ export default function Attendance() {
     try {
       const ok = await tryFingerprint();
       const method = ok ? "webauthn" : "manual";
+      const operatorRole = user?.roles.find((role) =>
+        ["admin", "super_admin", "director", "gateman"].includes(role),
+      ) ?? user?.roles[0] ?? "unknown";
+
       const { error } = await supabase.from("staff_attendance").insert({
         user_id: member.id,
         event,
         method,
         device_label: navigator.userAgent.slice(0, 120),
+        recorded_by_user_id: user?.id ?? null,
+        recorded_by_name: user?.displayName ?? null,
+        recorded_by_role: operatorRole,
       });
       if (error) throw error;
+
       toast.success(`${member.display_name ?? member.email} ${event === "check_in" ? "checked in" : "checked out"} successfully.`);
       await load();
     } catch (error: unknown) {
-      const message = friendlyErrorMessage(error, "Could not record that attendance event.");
-      toast.error(message);
+      toast.error(friendlyErrorMessage(error, "Could not record that attendance event."));
     } finally {
       setBusy(null);
     }
@@ -234,7 +238,7 @@ export default function Attendance() {
     }
 
     const lines = [
-      ["Date", "Time", "Staff", "Email", "Role", "Event", "Method", "Device"].join(","),
+      ["Date", "Time", "Staff", "Email", "Role", "Event", "Method", "Recorded By", "Recorder Role", "Device"].join(","),
       ...filteredEntries.map((entry) => {
         const member = staff.find((row) => row.id === entry.user_id);
         const date = new Date(entry.created_at);
@@ -246,6 +250,8 @@ export default function Attendance() {
           csvEscape(member?.role ?? ""),
           csvEscape(entry.event === "check_in" ? "IN" : "OUT"),
           csvEscape(entry.method),
+          csvEscape(entry.recorded_by_name ?? ""),
+          csvEscape(entry.recorded_by_role ?? ""),
           csvEscape(entry.device_label ?? ""),
         ].join(",");
       }),
@@ -275,7 +281,7 @@ export default function Attendance() {
           <ShieldAlert className="mx-auto h-10 w-10 text-destructive" />
           <h2 className="text-lg font-semibold">Restricted</h2>
           <p className="text-sm text-muted-foreground">
-            Only reception and the gate operator can open the attendance terminal.
+            Only admin, gateman, director, and super admin accounts can open the attendance terminal.
           </p>
         </Card>
       </div>
@@ -288,11 +294,11 @@ export default function Attendance() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Attendance Terminal</h1>
           <p className="text-sm text-muted-foreground">
-            Key staff in and out, then filter and export the attendance sheet by person, day, or month.
+            Key staff in and out, then track which operator account recorded each attendance event.
           </p>
         </div>
         <Badge variant="secondary" className="gap-1">
-          <Fingerprint className="h-3 w-3" /> Operator: {hasRole("super_admin") ? "Operator" : user?.displayName}
+          <Fingerprint className="h-3 w-3" /> Operator: {user?.displayName ?? "Unknown"}
         </Badge>
       </div>
 
@@ -302,8 +308,8 @@ export default function Attendance() {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search by name, email, role, or method..."
+              onChange={(event) => setQ(event.target.value)}
+              placeholder="Search by name, role, operator account, or method..."
               className="pl-9"
             />
           </div>
@@ -323,11 +329,11 @@ export default function Attendance() {
           </div>
           <div>
             <Label className="text-xs">Exact day</Label>
-            <Input type="date" value={dayFilter} onChange={(e) => setDayFilter(e.target.value)} />
+            <Input type="date" value={dayFilter} onChange={(event) => setDayFilter(event.target.value)} />
           </div>
           <div>
             <Label className="text-xs">Month</Label>
-            <Input type="month" value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} />
+            <Input type="month" value={monthFilter} onChange={(event) => setMonthFilter(event.target.value)} />
           </div>
           <Button variant="outline" className="self-end" onClick={clearFilters}>
             <RefreshCw className="mr-2 h-4 w-4" /> Reset
@@ -367,10 +373,10 @@ export default function Attendance() {
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium">{member.display_name ?? member.email}</p>
                 <p className="text-xs capitalize text-muted-foreground">
-                  {member.role ?? "—"}
+                  {member.roles.join(", ") || member.role || "-"}
                   {member.last_event && (
                     <>
-                      {" · "}
+                      {" | "}
                       <span className={isIn ? "text-success" : "text-muted-foreground"}>
                         {isIn ? "IN" : "OUT"} {formatDistanceToNow(new Date(member.last_event.created_at), { addSuffix: true })}
                       </span>
@@ -415,7 +421,7 @@ export default function Attendance() {
           <span className="text-xs text-muted-foreground">{filteredEntries.length} rows</span>
         </div>
         <div className="overflow-x-auto">
-          <table className="min-w-[860px] w-full text-sm">
+          <table className="min-w-[980px] w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs uppercase text-muted-foreground">
                 <th className="p-3">Date</th>
@@ -423,17 +429,18 @@ export default function Attendance() {
                 <th className="p-3">Role</th>
                 <th className="p-3">Event</th>
                 <th className="p-3">Method</th>
+                <th className="p-3">Recorded by</th>
                 <th className="p-3">Device</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-muted-foreground">Loading…</td>
+                  <td colSpan={7} className="p-8 text-center text-muted-foreground">Loading...</td>
                 </tr>
               ) : filteredEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-muted-foreground">No attendance rows for these filters.</td>
+                  <td colSpan={7} className="p-8 text-center text-muted-foreground">No attendance rows for these filters.</td>
                 </tr>
               ) : filteredEntries.map((entry) => {
                 const member = staff.find((row) => row.id === entry.user_id);
@@ -446,16 +453,20 @@ export default function Attendance() {
                     </td>
                     <td className="p-3">
                       <div className="font-medium">{member?.display_name ?? entry.user_id.slice(0, 8)}</div>
-                      <div className="text-xs text-muted-foreground">{member?.email ?? "—"}</div>
+                      <div className="text-xs text-muted-foreground">{member?.email ?? "-"}</div>
                     </td>
-                    <td className="p-3 capitalize text-muted-foreground">{member?.role ?? "—"}</td>
+                    <td className="p-3 capitalize text-muted-foreground">{member?.roles.join(", ") || member?.role || "-"}</td>
                     <td className="p-3">
                       <Badge variant={entry.event === "check_in" ? "default" : "secondary"}>
                         {entry.event === "check_in" ? "IN" : "OUT"}
                       </Badge>
                     </td>
                     <td className="p-3 text-xs uppercase text-muted-foreground">{entry.method}</td>
-                    <td className="p-3 text-xs text-muted-foreground">{entry.device_label ?? "—"}</td>
+                    <td className="p-3">
+                      <div className="text-xs font-medium">{entry.recorded_by_name ?? "Unknown"}</div>
+                      <div className="text-[11px] capitalize text-muted-foreground">{entry.recorded_by_role ?? "unknown"}</div>
+                    </td>
+                    <td className="p-3 text-xs text-muted-foreground">{entry.device_label ?? "-"}</td>
                   </tr>
                 );
               })}

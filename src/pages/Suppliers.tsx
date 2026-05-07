@@ -26,7 +26,7 @@ export default function Suppliers() {
   const [openSup, setOpenSup] = useState(false);
   const [openPay, setOpenPay] = useState<Supplier | null>(null);
   const [openCharge, setOpenCharge] = useState<Supplier | null>(null);
-  const [supForm, setSupForm] = useState({ name: "", phone: "", kind: "external", location: "", purpose: "", notes: "" });
+  const [supForm, setSupForm] = useState({ name: "", phone: "", kind: "external", location: "", purpose: "", notes: "", opening_balance: "" });
   const [txnForm, setTxnForm] = useState({ amount: "", reference: "", note: "", date: new Date().toISOString().slice(0, 10) });
   const [chargeParts, setChargeParts] = useState<Part[]>([]);
   const [locs, setLocs] = useState<Loc[]>([]);
@@ -73,11 +73,37 @@ export default function Suppliers() {
 
   const saveSupplier = async () => {
     if (!supForm.name.trim()) { toast({ title: "Name required", variant: "destructive" }); return; }
-    const { error } = await supabase.from("suppliers").insert(supForm);
+    const openingBalance = Math.max(0, Number(supForm.opening_balance || 0));
+    const { data: supplier, error } = await supabase.from("suppliers").insert({
+      name: supForm.name,
+      phone: supForm.phone || null,
+      kind: supForm.kind,
+      location: supForm.location || null,
+      purpose: supForm.purpose || null,
+      notes: supForm.notes || null,
+    }).select("id, name").single();
     if (error) { toast({ title: "Save failed", description: error.message, variant: "destructive" }); return; }
+
+    if (supplier?.id && openingBalance > 0) {
+      const { error: ledgerError } = await supabase.from("supplier_ledger").insert({
+        supplier_id: supplier.id,
+        date: new Date().toISOString().slice(0, 10),
+        type: "opening_balance",
+        amount: openingBalance,
+        note: "Opening balance owed when supplier was created",
+      });
+      if (ledgerError) {
+        toast({ title: "Supplier added", description: `Opening balance was not saved: ${ledgerError.message}`, variant: "destructive" });
+        setOpenSup(false);
+        setSupForm({ name: "", phone: "", kind: "external", location: "", purpose: "", notes: "", opening_balance: "" });
+        load();
+        return;
+      }
+    }
+
     toast({ title: "Supplier added" });
     setOpenSup(false);
-    setSupForm({ name: "", phone: "", kind: "external", location: "", purpose: "", notes: "" });
+    setSupForm({ name: "", phone: "", kind: "external", location: "", purpose: "", notes: "", opening_balance: "" });
     load();
   };
 
@@ -149,6 +175,16 @@ export default function Suppliers() {
               </div>
               <div><Label>Location</Label><Input value={supForm.location} onChange={e => setSupForm({ ...supForm, location: e.target.value })} /></div>
               <div><Label>Purpose</Label><Input value={supForm.purpose} onChange={e => setSupForm({ ...supForm, purpose: e.target.value })} placeholder="e.g. Paint supplies" /></div>
+              <div>
+                <Label>Opening balance owed (KSh)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  value={supForm.opening_balance}
+                  onChange={e => setSupForm({ ...supForm, opening_balance: e.target.value })}
+                  placeholder="Optional amount you already owe this supplier"
+                />
+              </div>
               <div><Label>Notes</Label><Textarea value={supForm.notes} onChange={e => setSupForm({ ...supForm, notes: e.target.value })} /></div>
             </div>
             <DialogFooter>
@@ -213,7 +249,7 @@ export default function Suppliers() {
                     {bal === 0 ? "—" : fmt(bal)}
                   </td>
                   <td className="p-3 text-right">
-                    <Button size="sm" variant="outline" onClick={() => setOpenCharge(s)}>+ Charge</Button>
+                    <Button size="sm" variant="outline" onClick={() => setOpenCharge(s)}>+ Owed / Charge</Button>
                     <Button size="sm" className="ml-2 bg-gradient-primary" onClick={() => setOpenPay(s)}>Pay</Button>
                   </td>
                 </tr>
