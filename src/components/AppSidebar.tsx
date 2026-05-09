@@ -24,7 +24,7 @@ const items: Item[] = [
   { title: "Gate Control", url: "/gate", icon: DoorOpen, roles: ["admin","reception","gateman","manager","director","super_admin"] },
   { title: "Attendance", url: "/attendance", icon: Fingerprint, roles: ["admin","gateman","director","super_admin"] },
   { title: "Payroll", url: "/payroll", icon: BadgeDollarSign, roles: ["director","super_admin"] },
-  { title: "Reports", url: "/reports", icon: BarChart3, roles: ["admin","manager","director","super_admin"] },
+  { title: "Reports", url: "/reports", icon: BarChart3, roles: ["admin","director","super_admin"] },
   { title: "Tronix AI", url: "/tronix", icon: Sparkles, roles: ["admin","reception","manager","director","super_admin","mechanic","storekeeper"] },
   { title: "User Management", url: "/users", icon: Users, roles: ["admin","director","super_admin"] },
   { title: "Settings", url: "/settings", icon: Settings, roles: ["admin","director","super_admin"] },

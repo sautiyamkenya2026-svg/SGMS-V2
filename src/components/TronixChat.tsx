@@ -29,7 +29,7 @@ const MAX_IMAGE_COUNT = 6;
 
 const WELCOME_MESSAGE: Msg = {
   role: "assistant",
-  content: "Hi, I'm **Tronix**. Ask me anything. I can help with garage work, and I can also chat normally about everyday topics.",
+  content: "Hi, I'm **Tronix**. Ask me anything. I can help with garage work, uploaded images, and everyday questions too.",
 };
 
 const readAsDataUrl = (file: File) =>
@@ -196,7 +196,13 @@ export function TronixChat({ fullPage = false, className }: Props) {
     try {
       const contextMessages = [...messages, userMsg]
         .filter((message) => message.content !== WELCOME_MESSAGE.content)
-        .filter((message) => !(message.role === "assistant" && message.content.startsWith("I hit a snag:")))
+        .filter((message) => !(
+          message.role === "assistant"
+          && (
+            message.content.startsWith("I ran into a temporary problem:")
+            || message.content.startsWith("I hit a snag:")
+          )
+        ))
         .slice(-12)
         .map((message) => ({
           role: message.role,
@@ -225,7 +231,7 @@ export function TronixChat({ fullPage = false, className }: Props) {
     } catch (e: any) {
       const message = friendlyErrorMessage(e, "Something went wrong.");
       toast({ title: "Tronix error", description: message, variant: "destructive" });
-      setMessages((prev) => [...prev, { role: "assistant", content: `I hit a snag: ${message}` }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: `I ran into a temporary problem: ${message}` }]);
     } finally {
       setLoading(false);
     }

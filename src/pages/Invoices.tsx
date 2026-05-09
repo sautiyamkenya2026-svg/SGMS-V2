@@ -17,6 +17,7 @@ import {
   storeInvoiceDocumentPdf,
 } from "@/lib/document-storage";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useAuth } from "@/lib/auth";
 import { canonicalizeDocuments } from "@/lib/generated-records";
 import {
   getNetInvoiceAmount,
@@ -144,6 +145,8 @@ async function openDocument(doc: DocumentRow) {
 }
 
 export default function Invoices() {
+  const { user } = useAuth();
+  const canSeeCompanyFinancialSummary = !!user?.roles.some((role) => ["admin", "super_admin", "director"].includes(role));
   const isMobile = useIsMobile();
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -288,28 +291,30 @@ export default function Invoices() {
         <Button className="w-full bg-gradient-primary sm:w-auto" onClick={openNew}><Plus className="h-4 w-4 mr-2" />New document</Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><FileText className="h-3.5 w-3.5" />Documents</div>
-          <p className="mt-1 text-2xl font-bold">{totals.count}</p>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><FileSignature className="h-3.5 w-3.5" />Final invoices</div>
-          <p className="mt-1 text-2xl font-bold">{totals.invoiceCount}</p>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><DollarSign className="h-3.5 w-3.5" />Deposits requested</div>
-          <p className="mt-1 text-2xl font-bold">{fmt(totals.depositRequested)}</p>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><CheckCircle2 className="h-3.5 w-3.5" />Payments recorded</div>
-          <p className="mt-1 text-2xl font-bold text-status-diagnosed">{fmt(totals.paymentsRecorded)}</p>
-        </Card>
-        <Card className="p-4">
-          <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><Clock className="h-3.5 w-3.5" />Open invoice balance</div>
-          <p className="mt-1 text-2xl font-bold text-destructive">{fmt(totals.outstanding)}</p>
-        </Card>
-      </div>
+      {canSeeCompanyFinancialSummary && (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <Card className="p-4">
+            <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><FileText className="h-3.5 w-3.5" />Documents</div>
+            <p className="mt-1 text-2xl font-bold">{totals.count}</p>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><FileSignature className="h-3.5 w-3.5" />Final invoices</div>
+            <p className="mt-1 text-2xl font-bold">{totals.invoiceCount}</p>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><DollarSign className="h-3.5 w-3.5" />Deposits requested</div>
+            <p className="mt-1 text-2xl font-bold">{fmt(totals.depositRequested)}</p>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><CheckCircle2 className="h-3.5 w-3.5" />Payments recorded</div>
+            <p className="mt-1 text-2xl font-bold text-status-diagnosed">{fmt(totals.paymentsRecorded)}</p>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground"><Clock className="h-3.5 w-3.5" />Open invoice balance</div>
+            <p className="mt-1 text-2xl font-bold text-destructive">{fmt(totals.outstanding)}</p>
+          </Card>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
         <div className="relative w-full min-w-0 sm:flex-1 sm:min-w-64 sm:max-w-sm">

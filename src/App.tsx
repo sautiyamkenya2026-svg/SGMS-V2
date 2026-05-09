@@ -32,7 +32,7 @@ const STOCK = ["admin","storekeeper","reception","manager","director","super_adm
 const TOOLS = ["admin","storekeeper","mechanic","manager","director","super_admin"] as const;
 const REQS  = ["admin","reception","mechanic","storekeeper","manager","director","super_admin"] as const;
 const GATE  = ["admin","reception","gateman","manager","director","super_admin"] as const;
-const REPS  = ["admin","manager","director","super_admin"] as const;
+const REPS  = ["admin","director","super_admin"] as const;
 const ATTN  = ["admin","gateman","director","super_admin"] as const;
 const PAYRL = ["director","super_admin"] as const;
 

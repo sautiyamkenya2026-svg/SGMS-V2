@@ -375,6 +375,7 @@ async function openGatePassPdf(
 
 export default function Jobs() {
   const { user, loading: authLoading } = useAuth();
+  const canSeeCompanyFinancialSummary = !!user?.roles.some((role) => ["admin", "super_admin", "director"].includes(role));
   const [jobs, setJobs] = useState<Job[]>([]);
   const [openJob, setOpenJob] = useState<Job | null>(null);
   const [tab, setTab] = useState("new_checkin");
@@ -635,34 +636,36 @@ export default function Jobs() {
               </Button>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Card className="p-4">
-                <p className="text-xs uppercase text-muted-foreground">Total billed</p>
-                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.totalBilled.toLocaleString()}</p>
-              </Card>
-              <Card className="p-4">
-                <p className="text-xs uppercase text-muted-foreground">Billed today</p>
-                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedToday.toLocaleString()}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">{completedBillingStats.jobsToday} job{completedBillingStats.jobsToday === 1 ? "" : "s"}</p>
-              </Card>
-              <Card className="p-4">
-                <p className="text-xs uppercase text-muted-foreground">Yesterday billed</p>
-                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedYesterday.toLocaleString()}</p>
-              </Card>
-              <Card className="p-4">
-                <p className="text-xs uppercase text-muted-foreground">Day before billed</p>
-                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedDayBefore.toLocaleString()}</p>
-              </Card>
-              <Card className="p-4 sm:col-span-2 xl:col-span-2">
-                <p className="text-xs uppercase text-muted-foreground">This month billed</p>
-                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedThisMonth.toLocaleString()}</p>
-              </Card>
-              <Card className="p-4 sm:col-span-2 xl:col-span-2">
-                <p className="text-xs uppercase text-muted-foreground">Filtered view</p>
-                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.filteredBilled.toLocaleString()}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">{completedBillingStats.filteredJobs} completed job{completedBillingStats.filteredJobs === 1 ? "" : "s"} in this filter.</p>
-              </Card>
-            </div>
+            {canSeeCompanyFinancialSummary && (
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <Card className="p-4">
+                  <p className="text-xs uppercase text-muted-foreground">Total billed</p>
+                  <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.totalBilled.toLocaleString()}</p>
+                </Card>
+                <Card className="p-4">
+                  <p className="text-xs uppercase text-muted-foreground">Billed today</p>
+                  <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedToday.toLocaleString()}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">{completedBillingStats.jobsToday} job{completedBillingStats.jobsToday === 1 ? "" : "s"}</p>
+                </Card>
+                <Card className="p-4">
+                  <p className="text-xs uppercase text-muted-foreground">Yesterday billed</p>
+                  <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedYesterday.toLocaleString()}</p>
+                </Card>
+                <Card className="p-4">
+                  <p className="text-xs uppercase text-muted-foreground">Day before billed</p>
+                  <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedDayBefore.toLocaleString()}</p>
+                </Card>
+                <Card className="p-4 sm:col-span-2 xl:col-span-2">
+                  <p className="text-xs uppercase text-muted-foreground">This month billed</p>
+                  <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedThisMonth.toLocaleString()}</p>
+                </Card>
+                <Card className="p-4 sm:col-span-2 xl:col-span-2">
+                  <p className="text-xs uppercase text-muted-foreground">Filtered view</p>
+                  <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.filteredBilled.toLocaleString()}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">{completedBillingStats.filteredJobs} completed job{completedBillingStats.filteredJobs === 1 ? "" : "s"} in this filter.</p>
+                </Card>
+              </div>
+            )}
 
             <Card>
             <div className="p-4 border-b">
@@ -1692,7 +1695,8 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   onMoveStatus: (s: JobStatus) => void;
 }) {
   const { hasRole, user } = useAuth();
-  const canSeePrivateJobPhotos = hasRole("admin") || hasRole("super_admin") || hasRole("manager") || hasRole("director");
+  const canSeeCompanyFinancialSummary = hasRole("admin") || hasRole("super_admin") || hasRole("director");
+  const canSeePrivateJobPhotos = canSeeCompanyFinancialSummary;
   const canApproveFitting = hasRole("mechanic") || hasRole("admin") || hasRole("super_admin") || hasRole("storekeeper") || hasRole("manager") || hasRole("director");
   const isMechanicOnly = hasRole("mechanic") && !(hasRole("admin") || hasRole("super_admin") || hasRole("director") || hasRole("manager") || hasRole("reception") || hasRole("storekeeper"));
   const canSeeFinances = !isMechanicOnly;
@@ -1705,7 +1709,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const [requestOpen, setRequestOpen] = useState(false);
   const [inspectOpen, setInspectOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
-  const [tab, setTab] = useState<"overview" | "diagnosis" | "financial" | "documents">("overview");
+  const [tab, setTab] = useState<"overview" | "diagnosis" | "financial" | "documents" | "photos">("overview");
   const [findings, setFindings] = useState<any[]>([]);
   const [obdCodes, setObdCodes] = useState<any[]>([]);
   const [lineItems, setLineItems] = useState<any[]>([]);
@@ -1909,11 +1913,11 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   // ===== STRICT DOC GATING (real garage flow) =====
   // Quotation: available once we've moved past "diagnosis" (so a diagnosis is on file)
   // Invoice  : only after work is "completed"
-  // Receipt  : only after the customer has paid (status "closed" OR amount_paid >= total)
+  // Receipt  : available once any payment has been recorded, or once the job is closed
   const canQuotation = job.status !== "diagnosis";
   const canDepositInvoice = canQuotation && depositRequiredValue > 0;
   const canInvoice = ["completed", "closed"].includes(job.status);
-  const canReceipt = !paymentBypass && (job.status === "closed" || (totalPaidValue >= lineTotal && lineTotal > 0));
+  const canReceipt = !paymentBypass && (totalPaidValue > 0 || job.status === "closed");
   const currentStage: DocumentKind =
     canReceipt ? "receipt" : canInvoice ? "invoice" : canDepositInvoice ? "deposit_invoice" : "quotation";
 
@@ -1961,15 +1965,32 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
         notes: "Deposit requested before work starts.",
         vat: false,
       })
+    : kind === "receipt"
+      ? ({
+          doc_no: getDocumentNumber(jobSnapshot.job_no, kind),
+          job_no: jobSnapshot.job_no,
+          date: String(jobSnapshot.paid_at ?? jobSnapshot.completed_at ?? new Date().toISOString()).slice(0, 10),
+          customer_name: payerLabel || (jobSnapshot.customer_name ?? ""),
+          customer_phone: jobSnapshot.customer_phone ?? "",
+          plate: jobSnapshot.plate,
+          lines: [{
+            description: `Payment received for job ${jobSnapshot.job_no} - ${jobSnapshot.plate}`,
+            qty: 1,
+            unit_price: Math.max(0, amountPaidValue),
+          }],
+          served_by: jobSnapshot.mechanic ?? undefined,
+          discount: 0,
+          amount_paid: Math.max(0, amountPaidValue),
+          notes: workPerformed || reportedProblem || jobSnapshot.complaint || "Customer payment received.",
+          vat: false,
+        })
     : ({
     doc_no: getDocumentNumber(jobSnapshot.job_no, kind),
     job_no: jobSnapshot.job_no,
     date:
-      kind === "receipt"
-        ? String(jobSnapshot.paid_at ?? new Date().toISOString()).slice(0, 10)
-        : kind === "invoice"
-          ? String(jobSnapshot.completed_at ?? jobSnapshot.started_at).slice(0, 10)
-          : new Date(jobSnapshot.started_at).toISOString().slice(0, 10),
+      kind === "invoice"
+        ? String(jobSnapshot.completed_at ?? jobSnapshot.started_at).slice(0, 10)
+        : new Date(jobSnapshot.started_at).toISOString().slice(0, 10),
     customer_name: payerLabel || (jobSnapshot.customer_name ?? ""),
     customer_phone: jobSnapshot.customer_phone ?? "",
     plate: jobSnapshot.plate,
@@ -1978,7 +1999,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       : [{ description: `${job.service_type ?? "Service"} — ${job.reported_problem ?? job.complaint ?? "Workshop services"}`, qty: 1, unit_price: lineSubtotal || Number(job.estimate || 0) }],
     served_by: jobSnapshot.mechanic ?? undefined,
     discount,
-    amount_paid: kind === "receipt" ? Math.max(0, amountPaidValue - depositPaidValue) : kind === "invoice" ? amountPaidValue : undefined,
+    amount_paid: kind === "invoice" ? amountPaidValue : undefined,
     notes: workPerformed || reportedProblem || jobSnapshot.complaint || undefined,
     vat: false,
   });
@@ -2422,7 +2443,8 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
           qty: 1,
           unit_price: subtotal || Number(jobSnapshot.estimate || 0),
         }];
-    const receiptCaptured = Math.max(0, amountPaidValue - depositPaidValue);
+    const shouldCreateReceipt = !paymentBypass
+      && (amountPaidValue > 0 || jobSnapshot.status === "closed" || Boolean(jobSnapshot.paid_at));
 
     const documents: Array<{ kind: DocumentKind; payload: Record<string, any>; items: any[] }> = [];
     if (canQuotation || subtotal > 0 || total > 0) {
@@ -2438,7 +2460,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
           time_in: jobSnapshot.started_at,
           time_out: null,
           date: String(jobSnapshot.started_at).slice(0, 10),
-          amount: total,
+          amount: subtotal,
           discount,
           discount_by: discountReason || null,
           amount_paid: 0,
@@ -2503,7 +2525,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
           time_in: jobSnapshot.started_at,
           time_out: jobSnapshot.completed_at ?? jobSnapshot.paid_at ?? null,
           date: String(jobSnapshot.completed_at ?? jobSnapshot.started_at).slice(0, 10),
-          amount: total,
+          amount: subtotal,
           discount,
           discount_by: discountReason || null,
           amount_paid: paymentBypass ? 0 : amountPaidValue,
@@ -2524,7 +2546,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
         items: fallbackRows,
       });
     }
-    if (!paymentBypass && (canReceipt || receiptCaptured > 0)) {
+    if (shouldCreateReceipt) {
       documents.push({
         kind: "receipt",
         payload: {
@@ -2536,11 +2558,11 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
           parts_source: "job_card",
           time_in: jobSnapshot.started_at,
           time_out: jobSnapshot.paid_at ?? jobSnapshot.completed_at ?? null,
-          date: String(jobSnapshot.paid_at ?? new Date().toISOString()).slice(0, 10),
-          amount: receiptCaptured || amountPaidValue,
+          date: String(jobSnapshot.paid_at ?? jobSnapshot.completed_at ?? new Date().toISOString()).slice(0, 10),
+          amount: amountPaidValue,
           discount: 0,
           discount_by: null,
-          amount_paid: receiptCaptured || amountPaidValue,
+          amount_paid: amountPaidValue,
           technicians: jobSnapshot.mechanic ?? null,
           customer_phone: jobSnapshot.customer_phone ?? null,
           status: "paid",
@@ -2552,7 +2574,12 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
           payment_mode: paymentMode,
           payment_reference: paymentReference || null,
         },
-        items: fallbackRows,
+        items: [{
+          kind: "labour",
+          description: `Payment received for job ${jobSnapshot.job_no} - ${jobSnapshot.plate}`,
+          qty: 1,
+          unit_price: amountPaidValue,
+        }],
       });
     }
 
@@ -3120,6 +3147,7 @@ Golden Automotive Solutions`);
           </TabsTrigger>
           {canSeeFinances && <TabsTrigger value="financial">Financial summary</TabsTrigger>}
           {canSeeFinances && <TabsTrigger value="documents">Documents</TabsTrigger>}
+          {canSeePrivateJobPhotos && <TabsTrigger value="photos">Photos</TabsTrigger>}
         </TabsList>
 
         {/* ====================== OVERVIEW ====================== */}
@@ -3202,7 +3230,7 @@ Golden Automotive Solutions`);
                 </div>
               </div>
             )}
-            {canSeeFinances && (
+            {canSeeCompanyFinancialSummary && (
               <div className="border-t pt-4">
                 <h3 className="font-semibold flex items-center gap-2 mb-3"><DollarSign className="h-4 w-4 text-primary" />Profit (live)</h3>
                 <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
@@ -3256,19 +3284,6 @@ Golden Automotive Solutions`);
                 </div>
               </div>
             </Card>
-            {canSeePrivateJobPhotos && jobPhotos.length > 0 && (
-              <Card className="p-5">
-                <h3 className="font-semibold flex items-center gap-2 mb-3"><ClipboardList className="h-4 w-4 text-primary" />Private intake photos</h3>
-                <div className="grid grid-cols-2 gap-3">
-                  {jobPhotos.map((photo, index) => (
-                    <div key={`${photo.kind}-${index}`} className="space-y-1">
-                      <img src={photo.url} alt={photo.kind} className="h-24 w-full rounded-md border object-cover" />
-                      <p className="text-[11px] capitalize text-muted-foreground">{JOB_CARD_PHOTO_LABELS[photo.kind as JobCardPhotoKind] ?? photo.kind.replaceAll("_", " ")}</p>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
           </div>
         </TabsContent>
 
@@ -3623,7 +3638,7 @@ Golden Automotive Solutions`);
                 title="Receipt"
                 icon={<Receipt className="h-4 w-4" />}
                 enabled={canReceipt}
-                lockedReason="Unlocks once the customer has paid in full."
+                lockedReason="Unlocks once any payment has been recorded."
                 active={currentStage === "receipt"}
                 onDownload={() => openStoredDocumentCard((target) => openInvoiceDocumentForJob("receipt", target))}
               />
@@ -3640,6 +3655,28 @@ Golden Automotive Solutions`);
             </p>
           </Card>
         </TabsContent>
+        {canSeePrivateJobPhotos && (
+          <TabsContent value="photos" className={`mt-4 ${readOnlyPanelClass}`}>
+            <Card className="p-5">
+              <h3 className="font-semibold flex items-center gap-2 mb-2"><ClipboardList className="h-4 w-4 text-primary" />Vehicle intake photos</h3>
+              <p className="text-xs text-muted-foreground mb-4">Only admin, director, and super admin can view this photo record.</p>
+              {jobPhotos.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No intake photos are stored for this vehicle yet.</p>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {jobPhotos.map((photo, index) => (
+                    <div key={`${photo.kind}-${index}`} className="space-y-2 rounded-lg border p-3">
+                      <img src={photo.url} alt={photo.kind} className="h-48 w-full rounded-md object-cover" />
+                      <p className="text-xs capitalize text-muted-foreground">
+                        {JOB_CARD_PHOTO_LABELS[photo.kind as JobCardPhotoKind] ?? photo.kind.replaceAll("_", " ")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
 
       <RequestPartDialog

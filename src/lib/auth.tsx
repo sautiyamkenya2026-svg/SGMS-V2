@@ -73,8 +73,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     const isEmail = looksLikeEmail(email);
-    const identifier = isEmail ? email.trim() : clientPortalEmailFromPlate(email);
-    const secret = isEmail ? password : clientPortalPasswordFromPhone(password, email);
+    let identifier = isEmail ? email.trim() : clientPortalEmailFromPlate(email);
+    let secret = isEmail ? password : clientPortalPasswordFromPhone(password, email);
+
+    if (!isEmail) {
+      supabase.functions.setAuth("");
+      const { data } = await supabase.functions.invoke<{ ok?: boolean; email?: string; password?: string }>(
+        "client-portal-access",
+        { body: { plate: email, phone: password } },
+      );
+      if (data?.ok && data.email && data.password) {
+        identifier = data.email;
+        secret = data.password;
+      }
+    }
+
     const { error } = await supabase.auth.signInWithPassword({ email: identifier, password: secret });
     return { error: error?.message ?? null };
   };

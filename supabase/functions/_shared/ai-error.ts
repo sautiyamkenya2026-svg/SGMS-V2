@@ -63,39 +63,18 @@ export function formatGeminiFailure(rawError: string, attemptedKeys: number) {
     hasGeminiQuotaMarker(message || rawError, details);
 
   if (isQuotaError) {
-    const keyLabel = attemptedKeys > 1 ? "all configured Gemini keys" : "the configured Gemini key";
-    const hasDailyOrZeroQuota =
-      /GenerateRequestsPerDayPerProjectPerModel-FreeTier/i.test(JSON.stringify(details)) ||
-      /limit:\s*0/i.test(rawError);
-
-    if (hasDailyOrZeroQuota) {
-      return [
-        `Gemini quota exhausted for ${keyLabel}.`,
-        "This Google AI project currently has no usable free-tier quota.",
-        "Add a billed Gemini key or a key from a different Google AI project in Users > AI Keys.",
-        "If several keys belong to the same Google project, rotating them will not help because they share quota.",
-      ].join(" ");
-    }
-
     if (retryDelay) {
-      return [
-        `Gemini rate limit hit for ${keyLabel}.`,
-        `Retry after about ${retryDelay}.`,
-        "If this keeps happening, add another active key from a different Google AI project.",
-      ].join(" ");
+      return `The AI assistant is briefly busy. Retry after about ${retryDelay}.`;
     }
 
-    return [
-      `Gemini quota exhausted for ${keyLabel}.`,
-      "Wait a bit and retry, or switch to another active key from a different Google AI project.",
-    ].join(" ");
+    return "The AI assistant is briefly busy right now. Please retry in a moment.";
   }
 
   if (err?.code === 401 || err?.code === 403 || /api key|permission/i.test(message)) {
-    return "Gemini API key is invalid, disabled, or not allowed for this API.";
+    return "The AI assistant is not available right now.";
   }
 
-  return message || "Gemini request failed.";
+  return message || "The AI assistant could not complete that request.";
 }
 
 export function formatGroqFailure(rawError: string, attemptedKeys: number) {
@@ -105,20 +84,15 @@ export function formatGroqFailure(rawError: string, attemptedKeys: number) {
     ? err.message.trim()
     : rawError.trim();
   const normalized = `${message} ${rawError}`.toLowerCase();
-  const keyLabel = attemptedKeys > 1 ? "all configured Groq keys" : "the configured Groq key";
-
   if (/429|rate limit|quota|resource exhausted|too many requests/.test(normalized)) {
-    return [
-      `Groq rate limit or quota hit for ${keyLabel}.`,
-      "Retry in a moment, or add another active Groq key in Users > AI Keys.",
-    ].join(" ");
+    return "The AI assistant is briefly busy right now. Please retry in a moment.";
   }
 
   if (/401|403|api key|unauthorized|forbidden|invalid api key/.test(normalized)) {
-    return "Groq API key is invalid, disabled, or not allowed for this model.";
+    return "The AI assistant is not available right now.";
   }
 
-  return message || "Groq request failed.";
+  return message || "The AI assistant could not complete that request.";
 }
 
 export function formatProviderFailure(provider: AIProviderName, rawError: string, attemptedKeys: number) {
@@ -127,16 +101,8 @@ export function formatProviderFailure(provider: AIProviderName, rawError: string
     : formatGeminiFailure(rawError, attemptedKeys);
 }
 
-function providerLabel(provider: AIProviderName) {
-  return provider === "groq" ? "Groq" : "Gemini";
-}
-
 export function formatAggregateProviderFailure(failures: ProviderFailure[]) {
-  if (failures.length === 0) return "All AI providers failed.";
+  if (failures.length === 0) return "The AI assistant is not available right now.";
   if (failures.length === 1) return failures[0].message;
-
-  return [
-    "All AI providers failed.",
-    ...failures.map((failure) => `${providerLabel(failure.provider)}: ${failure.message}`),
-  ].join(" ");
+  return "The AI assistant is not available right now. Please try again shortly.";
 }

@@ -17,12 +17,11 @@ import { toDateValue, toLocalDateValue } from "@/lib/date-values";
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
 import {
   getBillingDocumentDay,
-  getNetInvoiceAmount,
   isCollectedPaymentDocument,
-  isFinalInvoiceDocument,
   sumBilledInvoices,
   sumOutstandingInvoices,
   sumRecordedPayments,
+  sumRecordedPaymentsForDay,
 } from "@/lib/finance";
 
 interface JobLookup {
@@ -109,6 +108,7 @@ function FinancialTab() {
   const { chart, totals } = useMemo(() => {
     const map = new Map<string, { day: string; parts: number; billed: number; collected: number }>();
     const paymentModeMap = new Map<string, { key: string; label: string; amount: number; count: number }>();
+    const collectionBuckets = new Map<string, { amount: number; paymentMode: string | null | undefined; priority: number }>();
     const days: string[] = [];
     for (let i = 6; i >= 0; i--) {
       const d = toLocalDateValue(new Date(Date.now() - i * 24 * 3600 * 1000));
@@ -131,32 +131,42 @@ function FinancialTab() {
       partsCost += cost;
     }
     for (const doc of documents) {
-      if (isCollectedPaymentDocument(doc)) {
-        const received = Number(doc.amount_paid || 0);
-        if (received > 0) {
-          const key = normalizePaymentMode(doc.payment_mode);
-          const current = paymentModeMap.get(key) ?? {
-            key,
-            label: paymentModeLabel(doc.payment_mode),
-            amount: 0,
-            count: 0,
-          };
-          current.amount += received;
-          current.count += 1;
-          paymentModeMap.set(key, current);
-        }
+      if (!isCollectedPaymentDocument(doc) && !(doc.doc_type === "invoice" && Number(doc.amount_paid || 0) > 0)) continue;
+      const bucketKey = String(doc.job_id ?? doc.invoice_no ?? doc.id ?? "");
+      if (!bucketKey) continue;
+      const candidateAmount = doc.doc_type === "receipt"
+        ? Math.max(Number(doc.amount_paid || 0), Number(doc.amount || 0))
+        : Number(doc.amount_paid || 0);
+      if (candidateAmount <= 0) continue;
+      const priority = doc.doc_type === "receipt" ? 3 : doc.doc_type === "invoice" ? 2 : 1;
+      const existing = collectionBuckets.get(bucketKey);
+      if (!existing || priority > existing.priority || (priority === existing.priority && candidateAmount >= existing.amount)) {
+        collectionBuckets.set(bucketKey, {
+          amount: candidateAmount,
+          paymentMode: doc.payment_mode,
+          priority,
+        });
       }
-      const d = getBillingDocumentDay(doc);
+    }
+    collectionBuckets.forEach((bucket) => {
+      const key = normalizePaymentMode(bucket.paymentMode);
+      const current = paymentModeMap.get(key) ?? {
+        key,
+        label: paymentModeLabel(bucket.paymentMode),
+        amount: 0,
+        count: 0,
+      };
+      current.amount += bucket.amount;
+      current.count += 1;
+      paymentModeMap.set(key, current);
+    });
+    for (const d of days) {
       const row = map.get(d);
       if (!row) continue;
-      const invoiceAmount = isFinalInvoiceDocument(doc) ? getNetInvoiceAmount(doc) : 0;
-      const received = isCollectedPaymentDocument(doc)
-        ? Number(doc.amount_paid || 0)
-        : 0;
-      row.billed += invoiceAmount;
-      row.collected += received;
-      billed7d += invoiceAmount;
-      collected7d += received;
+      row.billed = sumBilledInvoices(documents.filter((doc) => getBillingDocumentDay(doc) === d));
+      row.collected = sumRecordedPaymentsForDay(documents, d);
+      billed7d += row.billed;
+      collected7d += row.collected;
     }
     for (const p of petty) {
       if (p.type === "payment") pettyOut += Number(p.amount ?? 0) + Number(p.transaction_cost ?? 0);

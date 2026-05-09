@@ -211,7 +211,7 @@ export default function Dashboard() {
           <Card className="border-muted p-5">
             <h2 className="mb-3 flex items-center gap-2 font-semibold"><Timer className="h-4 w-4 text-muted-foreground" />Status</h2>
             <p className="text-sm text-muted-foreground">
-              Today's collections follow the billed amount on final invoices dated today so the dashboard matches billing.
+              Today's collections follow the receipt-backed billed amount for each job so the dashboard stays aligned with payment records.
             </p>
           </Card>
         </div>
