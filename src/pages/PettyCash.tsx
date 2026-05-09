@@ -17,6 +17,17 @@ import { generatePettyCashReportPDF } from "@/lib/pdf-templates";
 import { useAuth } from "@/lib/auth";
 import { isEdgeFunctionUnavailable, readEdgeFunctionErrorMessage } from "@/lib/edge-function-error";
 import { invokeEdgeFunction } from "@/lib/invoke-edge";
+import {
+  closeReservedDocumentWindow,
+  openStoredDocumentUrl,
+  reserveDocumentWindow,
+  storeGeneratedPdfFile,
+} from "@/lib/document-storage";
+import {
+  buildPettyCashDailyLedger,
+  calculatePettyCashRangeSummary,
+  sortPettyCashEntriesNewestFirst,
+} from "@/lib/petty-cash";
 
 type Entry = {
   id: string;
@@ -165,7 +176,7 @@ export default function PettyCash() {
       supabase.from("user_roles").select("user_id, role"),
     ]);
     if (error) toast({ title: "Could not load", description: error.message, variant: "destructive" });
-    else setEntries(sortEntriesNewestFirst((data ?? []) as Entry[]));
+    else setEntries(sortPettyCashEntriesNewestFirst((data ?? []) as Entry[]));
 
     const roleMap = new Map<string, string[]>();
     ((roles ?? []) as StaffRoleRow[]).forEach((row) => {
@@ -230,13 +241,12 @@ export default function PettyCash() {
     const existingOpening = entries.find((entry) => entry.type === "opening_balance" && entry.date === targetDate);
     if (existingOpening) return existingOpening;
 
-    const priorEntries = entries.filter((entry) => entry.date < targetDate);
-    if (priorEntries.length === 0) return null;
+    const priorDays = buildPettyCashDailyLedger(entries).filter((day) => day.date < targetDate);
+    if (priorDays.length === 0) return null;
 
-    const openingAmount = priorEntries.reduce((sum, entry) => sum + entryDelta(entry), 0);
-    const lastCoveredDate = priorEntries
-      .map((entry) => entry.date)
-      .sort((a, b) => (a < b ? 1 : -1))[0];
+    const lastCoveredDay = priorDays[priorDays.length - 1];
+    const openingAmount = lastCoveredDay.closing;
+    const lastCoveredDate = lastCoveredDay.date;
 
     const { data, error } = await supabase
       .from("petty_cash_entries")
@@ -257,7 +267,7 @@ export default function PettyCash() {
       .single();
     if (error) throw error;
     if (data) {
-      setEntries((current) => sortEntriesNewestFirst([data as Entry, ...current]));
+      setEntries((current) => sortPettyCashEntriesNewestFirst([data as Entry, ...current]));
       return data as Entry;
     }
     return null;
@@ -280,23 +290,10 @@ export default function PettyCash() {
   }, [entries, search, fromDate, toDate]);
   const hasFilters = Boolean(search.trim() || fromDate || toDate);
 
-  const totals = useMemo(() => {
-    let opening = 0, payments = 0, topups = 0, paymentTxnCost = 0, bankCharges = 0;
-    for (const e of filtered) {
-      if (e.type === "opening_balance") opening += Number(e.amount);
-      else if (e.type === "payment") {
-        payments += Number(e.amount);
-        paymentTxnCost += Number(e.transaction_cost || 0);
-      } else if (e.type === "topup") {
-        topups += Number(e.amount);
-        bankCharges += Number(e.transaction_cost || 0);
-      }
-    }
-    const txnCost = paymentTxnCost + bankCharges;
-    // Bank charges on top-ups also reduce available cash (deducted at source)
-    const balance = opening + topups - payments - txnCost;
-    return { opening, payments, topups, paymentTxnCost, bankCharges, txnCost, balance, totalExpenditure: payments + txnCost };
-  }, [filtered]);
+  const totals = useMemo(
+    () => calculatePettyCashRangeSummary(entries, { fromDate, toDate }),
+    [entries, fromDate, toDate],
+  );
 
   const submit = async () => {
     if (!form.amount) { toast({ title: "Amount required", variant: "destructive" }); return; }
@@ -369,7 +366,7 @@ export default function PettyCash() {
       return;
     }
     if (inserted) {
-      setEntries((current) => sortEntriesNewestFirst([inserted as Entry, ...current]));
+      setEntries((current) => sortPettyCashEntriesNewestFirst([inserted as Entry, ...current]));
     }
     toast({
       title: "Entry saved",
@@ -445,6 +442,49 @@ export default function PettyCash() {
   };
 
   const downloadReport = async () => {
+    const target = reserveDocumentWindow();
+    try {
+      const reportFrom = fromDate || "All dates";
+      const reportTo = toDate || "All dates";
+      const pdf = await generatePettyCashReportPDF({
+        from: reportFrom,
+        to: reportTo,
+        generated_by: user?.displayName,
+        opening_balance: totals.opening,
+        closing_balance: totals.balance,
+        total_topups: totals.topups,
+        total_payments: totals.payments,
+        total_bank_charges: totals.bankCharges,
+        total_payment_txn_cost: totals.paymentTxnCost,
+        total_expenditure: totals.totalExpenditure,
+        rows: filtered.map((entry) => {
+          const parts = splitContact(entry.details);
+          return {
+            date: entry.date,
+            transaction_time: entry.transaction_time ?? null,
+            type: entry.type,
+            payee: entry.payee,
+            contact: entry.contact ?? parts.contact,
+            details: parts.details,
+            payment_mode: entry.payment_mode ?? null,
+            payment_reference: entry.payment_reference ?? null,
+            amount: Number(entry.amount),
+            transaction_cost: Number(entry.transaction_cost || 0),
+          };
+        }),
+      }, { mode: "blob" });
+      const stored = await storeGeneratedPdfFile({
+        path: `reports/petty-cash/petty-cash-${reportFrom}_to_${reportTo}.pdf`,
+        pdf,
+      });
+      openStoredDocumentUrl(stored.url, target);
+    } catch (error: any) {
+      closeReservedDocumentWindow(target);
+      toast({ title: "Download failed", description: error?.message ?? "Unknown error", variant: "destructive" });
+    }
+  };
+
+  const legacyDownloadReport = async () => {
     try {
       await generatePettyCashReportPDF({
         from: fromDate || "—",

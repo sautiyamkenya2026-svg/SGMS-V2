@@ -19,6 +19,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { formatServiceTypes } from "@/lib/service-types";
 import { canonicalizeDocuments } from "@/lib/generated-records";
 import { toDateValue, toLocalDateValue } from "@/lib/date-values";
+import { sumBilledInvoicesForDay } from "@/lib/finance";
 
 const typeStyles: Record<string, string> = {
   success: "bg-success",
@@ -49,7 +50,7 @@ export default function Dashboard() {
         supabase.from("jobs").select("id,status,plate,customer_name,service_type,service_types,created_at,updated_at,job_no").order("created_at", { ascending: false }),
         supabase.from("parts").select("id,min_stock"),
         supabase.from("part_stock").select("part_id,qty"),
-        supabase.from("invoices").select("id, invoice_no, doc_type, amount, amount_paid, date, updated_at, created_at, payment_mode"),
+        supabase.from("invoices").select("id, invoice_no, doc_type, amount, amount_paid, date, updated_at, created_at, payment_mode, discount"),
       ]);
       if (!alive) return;
 
@@ -59,12 +60,7 @@ export default function Dashboard() {
       const approvalJobs = jobs.filter((job) => APPROVAL_STATUSES.includes(job.status));
       const documents = canonicalizeDocuments(docsRes.data ?? []);
 
-      const todayRevenue = documents.reduce((sum, doc: any) => {
-        if (!["receipt", "deposit_invoice"].includes(String(doc.doc_type ?? ""))) return sum;
-        const stamp = toDateValue(doc.updated_at ?? doc.created_at ?? doc.date);
-        if (stamp !== today) return sum;
-        return sum + Number(doc.amount_paid || 0);
-      }, 0);
+      const todayRevenue = sumBilledInvoicesForDay(documents, today);
 
       const totals = new Map<string, number>();
       (stockRes.data ?? []).forEach((row: any) => {
@@ -215,7 +211,7 @@ export default function Dashboard() {
           <Card className="border-muted p-5">
             <h2 className="mb-3 flex items-center gap-2 font-semibold"><Timer className="h-4 w-4 text-muted-foreground" />Status</h2>
             <p className="text-sm text-muted-foreground">
-              Today's collections come from receipts and deposit invoices actually recorded today, not draft quotations or unpaid invoices.
+              Today's collections follow the billed amount on final invoices dated today so the dashboard matches billing.
             </p>
           </Card>
         </div>

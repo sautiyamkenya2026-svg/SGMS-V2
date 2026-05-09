@@ -764,6 +764,13 @@ export interface PettyCashReportData {
   to: string;
   rows: PettyCashRow[];
   generated_by?: string;
+  opening_balance?: number;
+  closing_balance?: number;
+  total_topups?: number;
+  total_payments?: number;
+  total_bank_charges?: number;
+  total_payment_txn_cost?: number;
+  total_expenditure?: number;
 }
 
 export async function generatePettyCashReportPDF(data: PettyCashReportData, options: PdfBuildOptions = {}) {
@@ -782,19 +789,40 @@ export async function generatePettyCashReportPDF(data: PettyCashReportData, opti
     ["By", data.generated_by ?? "—"],
   ], 8 + half + 4, headerY, half);
 
-  let opening = 0, payments = 0, topups = 0, paymentTxnCost = 0, bankCharges = 0;
-  for (const r of data.rows) {
-    if (r.type === "opening_balance") opening += Number(r.amount);
-    else if (r.type === "payment") {
-      payments += Number(r.amount);
-      paymentTxnCost += Number(r.transaction_cost || 0);
-    } else if (r.type === "topup") {
-      topups += Number(r.amount);
-      bankCharges += Number(r.transaction_cost || 0);
+  let opening = Number(data.opening_balance ?? 0);
+  let payments = Number(data.total_payments ?? 0);
+  let topups = Number(data.total_topups ?? 0);
+  let paymentTxnCost = Number(data.total_payment_txn_cost ?? 0);
+  let bankCharges = Number(data.total_bank_charges ?? 0);
+  let txnCost = paymentTxnCost + bankCharges;
+  let balance = Number(data.closing_balance ?? 0);
+
+  if (
+    data.opening_balance == null
+    || data.closing_balance == null
+    || data.total_topups == null
+    || data.total_payments == null
+    || data.total_bank_charges == null
+    || data.total_payment_txn_cost == null
+  ) {
+    opening = 0;
+    payments = 0;
+    topups = 0;
+    paymentTxnCost = 0;
+    bankCharges = 0;
+    for (const r of data.rows) {
+      if (r.type === "opening_balance") opening += Number(r.amount);
+      else if (r.type === "payment") {
+        payments += Number(r.amount);
+        paymentTxnCost += Number(r.transaction_cost || 0);
+      } else if (r.type === "topup") {
+        topups += Number(r.amount);
+        bankCharges += Number(r.transaction_cost || 0);
+      }
     }
+    txnCost = paymentTxnCost + bankCharges;
+    balance = opening + topups - payments - txnCost;
   }
-  const txnCost = paymentTxnCost + bankCharges;
-  const balance = opening + topups - payments - txnCost;
 
   autoTable(doc, {
     startY: headerY + 18,
@@ -841,7 +869,7 @@ export async function generatePettyCashReportPDF(data: PettyCashReportData, opti
     ["Bank charges on top-ups", `- ${fmtKsh(bankCharges)}`],
     ["Payments (cash out)", `- ${fmtKsh(payments)}`],
     ["Payment txn costs", `- ${fmtKsh(paymentTxnCost)}`],
-    ["TOTAL EXPENDITURE", fmtKsh(payments + txnCost)],
+    ["TOTAL EXPENDITURE", fmtKsh(Number(data.total_expenditure ?? (payments + txnCost)))],
     ["CLOSING BALANCE", fmtKsh(balance)],
   ];
   doc.setDrawColor(...BROWN);

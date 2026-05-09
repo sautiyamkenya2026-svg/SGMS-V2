@@ -18,6 +18,12 @@ import {
 } from "@/lib/document-storage";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { canonicalizeDocuments } from "@/lib/generated-records";
+import {
+  getNetInvoiceAmount,
+  isFinalInvoiceDocument,
+  sumOutstandingInvoices,
+  sumRecordedPayments,
+} from "@/lib/finance";
 
 type DocumentType = "quotation" | "deposit_invoice" | "invoice" | "receipt";
 
@@ -64,9 +70,6 @@ const DOC_LABELS: Record<DocumentType, string> = {
 
 const fmt = (n: number) => `KSh ${Number(n || 0).toLocaleString()}`;
 const fmtTime = (s: string | null) => s ? new Date(s).toLocaleString("en-GB", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }) : "-";
-const documentOutstanding = (doc: Pick<DocumentRow, "doc_type" | "amount" | "amount_paid">) =>
-  doc.doc_type === "invoice" ? Math.max(0, Number(doc.amount || 0) - Number(doc.amount_paid || 0)) : 0;
-
 const EMPTY_FORM = {
   doc_type: "invoice" as DocumentType,
   invoice_no: "",
@@ -182,15 +185,14 @@ export default function Invoices() {
   }, [documents, search, statusFilter, docTypeFilter]);
 
   const totals = useMemo(() => {
-    const finalInvoices = documents.filter((doc) => doc.doc_type === "invoice");
+    const finalInvoices = documents.filter((doc) => isFinalInvoiceDocument(doc));
     const deposits = documents.filter((doc) => doc.doc_type === "deposit_invoice");
-    const receipts = documents.filter((doc) => doc.doc_type === "receipt");
     return {
       count: documents.length,
       invoiceCount: finalInvoices.length,
       depositRequested: deposits.reduce((sum, doc) => sum + Number(doc.amount || 0), 0),
-      paymentsRecorded: deposits.reduce((sum, doc) => sum + Number(doc.amount_paid || 0), 0) + receipts.reduce((sum, doc) => sum + Number(doc.amount_paid || 0), 0),
-      outstanding: finalInvoices.reduce((sum, doc) => sum + documentOutstanding(doc), 0),
+      paymentsRecorded: sumRecordedPayments(documents),
+      outstanding: sumOutstandingInvoices(finalInvoices),
     };
   }, [documents]);
 
@@ -362,7 +364,7 @@ export default function Invoices() {
                   <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
                     <div className="rounded-md bg-muted/40 p-3">
                       <p className="text-[11px] text-muted-foreground">Amount</p>
-                      <p className="font-bold">{fmt(doc.amount)}</p>
+                      <p className="font-bold">{fmt(isFinalInvoiceDocument(doc) ? getNetInvoiceAmount(doc) : Number(doc.amount || 0))}</p>
                     </div>
                     <div className="rounded-md bg-muted/40 p-3">
                       <p className="text-[11px] text-muted-foreground">Paid</p>
@@ -411,7 +413,7 @@ export default function Invoices() {
                       <p className="text-xs text-muted-foreground">{doc.payer_name ?? "-"}</p>
                     </td>
                     <td className="p-3 text-xs text-muted-foreground">{fmtTime(doc.time_in)} {"->"} {fmtTime(doc.time_out)}</td>
-                    <td className="p-3 text-right font-bold">{fmt(doc.amount)}</td>
+                    <td className="p-3 text-right font-bold">{fmt(isFinalInvoiceDocument(doc) ? getNetInvoiceAmount(doc) : Number(doc.amount || 0))}</td>
                     <td className="p-3 text-right">{fmt(doc.amount_paid)}</td>
                     <td className="p-3">{statusBadge(doc.status)}</td>
                     <td className="p-3 text-right">

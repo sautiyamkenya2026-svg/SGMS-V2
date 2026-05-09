@@ -161,8 +161,8 @@ async function loadRuntimeSettings(sb: SupabaseClient): Promise<AIRuntimeSetting
       "groq",
     ),
     imageProvider: normalizeProvider(
-      readEnvOrSetting("AI_IMAGE_PROVIDER", "ai_image_provider", settingsMap, "groq"),
-      "groq",
+      readEnvOrSetting("AI_IMAGE_PROVIDER", "ai_image_provider", settingsMap, "gemini"),
+      "gemini",
     ),
     geminiApiVersion: readEnvOrSetting("GEMINI_API_VERSION", "", settingsMap, "v1beta"),
     geminiModel: readEnvOrSetting("GEMINI_MODEL", "", settingsMap, "gemini-2.5-flash").replace(/^models\//, ""),

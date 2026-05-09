@@ -15,6 +15,15 @@ import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { toDateValue, toLocalDateValue } from "@/lib/date-values";
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
+import {
+  getBillingDocumentDay,
+  getNetInvoiceAmount,
+  isCollectedPaymentDocument,
+  isFinalInvoiceDocument,
+  sumBilledInvoices,
+  sumOutstandingInvoices,
+  sumRecordedPayments,
+} from "@/lib/finance";
 
 interface JobLookup {
   job: any;
@@ -39,28 +48,12 @@ const PAYMENT_MODE_LABELS: Record<string, string> = {
   unspecified: "Unspecified",
 };
 const PAYMENT_MODE_ORDER = ["cash", "mpesa", "bank", "card", "cheque", "unspecified"] as const;
-const netInvoiceAmount = (invoice: { amount?: number; discount?: number }) =>
-  Math.max(0, Number(invoice.amount || 0) - Number(invoice.discount || 0));
-const invoiceOutstandingAmount = (invoice: { doc_type?: string; amount?: number; amount_paid?: number; discount?: number }) =>
-  invoice.doc_type === "invoice"
-    ? Math.max(0, netInvoiceAmount(invoice) - Number(invoice.amount_paid || 0))
-    : 0;
-const sumBilledInvoices = (documents: Array<{ doc_type?: string; amount?: number; discount?: number }>) =>
-  documents.reduce((sum, doc) => sum + (doc.doc_type === "invoice" ? netInvoiceAmount(doc) : 0), 0);
-const sumCollectedPayments = (documents: Array<{ doc_type?: string; amount_paid?: number }>) =>
-  documents.reduce((sum, doc) => (
-    doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice"
-      ? sum + Number(doc.amount_paid || 0)
-      : sum
-  ), 0);
 const normalizePaymentMode = (value: string | null | undefined) => {
   const normalized = String(value ?? "").trim().toLowerCase();
   return normalized || "unspecified";
 };
 const paymentModeLabel = (value: string | null | undefined) =>
   PAYMENT_MODE_LABELS[normalizePaymentMode(value)] ?? "Unspecified";
-const isCollectedPaymentDocument = (doc: { doc_type?: string | null }) =>
-  doc.doc_type === "receipt" || doc.doc_type === "deposit_invoice";
 
 export default function Reports() {
   return (
@@ -153,12 +146,10 @@ function FinancialTab() {
           paymentModeMap.set(key, current);
         }
       }
-      const stamp = doc.updated_at ?? doc.created_at ?? doc.date;
-      if (!stamp) continue;
-      const d = dayKey(stamp);
+      const d = getBillingDocumentDay(doc);
       const row = map.get(d);
       if (!row) continue;
-      const invoiceAmount = doc.doc_type === "invoice" ? netInvoiceAmount(doc) : 0;
+      const invoiceAmount = isFinalInvoiceDocument(doc) ? getNetInvoiceAmount(doc) : 0;
       const received = isCollectedPaymentDocument(doc)
         ? Number(doc.amount_paid || 0)
         : 0;
@@ -182,9 +173,9 @@ function FinancialTab() {
         invoiceCount: finalInvoices.length,
         billed: sumBilledInvoices(documents),
         billed7d,
-        collected: sumCollectedPayments(documents),
+        collected: sumRecordedPayments(documents),
         collected7d,
-        outstanding: documents.reduce((sum, doc) => sum + invoiceOutstandingAmount(doc), 0),
+        outstanding: sumOutstandingInvoices(documents),
         partsRevenue,
         partsCost,
         pettyOut,
@@ -635,7 +626,7 @@ function JobReport({ report }: { report: JobLookup }) {
   const partsRevenue = parts.reduce((s, m) => s + (Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const pettyTotal = petty.reduce((s, e) => s + Number(e.amount ?? 0), 0);
   const invoiced = Number(job.invoice_amount || sumBilledInvoices(invoices));
-  const paid = Number(job.receipt_amount || sumCollectedPayments(invoices));
+  const paid = Number(job.receipt_amount || sumRecordedPayments(invoices));
   const jobTotal = Number(job.invoice_amount || job.quotation_amount || job.estimate || 0);
   const profit = jobTotal - partsCost - pettyTotal;
   const mechanicLabel = jobMechanics.length > 0
