@@ -176,10 +176,28 @@ const isMechanicOnlyUser = (roles: string[] = []) =>
   roles.includes("mechanic") && !roles.some((role) => NON_MECHANIC_ROLES.includes(role as any));
 
 const calculateLineSubtotal = (rows: Array<{ qty?: number; unit_price?: number }>) =>
-  rows.reduce((sum, row) => sum + Number(row.qty || 0) * Number(row.unit_price || 0), 0);
+  rows
+    .filter((row: any) => !(row.kind === "labour" && row.labour_source === "outsourced" && row.labour_charge_to === "client"))
+    .reduce((sum, row) => sum + Number(row.qty || 0) * Number(row.unit_price || 0), 0);
 
 const calculateLineTotal = (rows: Array<{ qty?: number; unit_price?: number }>, discount: number) =>
   Math.max(0, calculateLineSubtotal(rows) - Number(discount || 0));
+
+const isDirectPaidOutsourcedLabour = (row: any) =>
+  row?.kind === "labour" && row?.labour_source === "outsourced" && row?.labour_charge_to === "client";
+
+const getBillableLineItems = (rows: any[]) => rows.filter((row) => !isDirectPaidOutsourcedLabour(row));
+
+const formatBillingLineDescription = (row: any) => {
+  const baseDescription = String(row?.description ?? "").trim() || (row?.kind === "labour" ? "Labour" : "Item");
+  if (row?.kind !== "labour") return baseDescription;
+
+  const prefix = row?.labour_source === "outsourced" ? "Outsourced labour" : "In-house labour";
+  if (row?.labour_source === "outsourced" && row?.labour_charge_to === "client") {
+    return `${prefix}: ${baseDescription} (paid directly by client)`;
+  }
+  return `${prefix}: ${baseDescription}`;
+};
 
 const getJobChargeAmount = (job: Partial<Job>) =>
   Math.max(
@@ -1586,6 +1604,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const [jobPhotos, setJobPhotos] = useState<Array<{ kind: string; url: string }>>([]);
   const financialSyncQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [mechanicsList, setMechanicsList] = useState<Array<{ id: string; name: string; phone: string | null; specialties: string[] }>>([]);
+  const [labourSuppliers, setLabourSuppliers] = useState<Array<{ id: string; name: string; phone: string | null }>>([]);
   const [forwardOpen, setForwardOpen] = useState(false);
   const [forwardSpecialty, setForwardSpecialty] = useState<string>("all");
   const [forwardMechId, setForwardMechId] = useState("");
@@ -1619,13 +1638,14 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
       const { data: prev } = await supabase.from("jobs").select("*").eq("id", j.previous_job_id).maybeSingle();
       setPrevious(prev as any);
     }
-    const [{ data: m }, { data: p }, { data: inv }, { data: li }, { data: cat }, { data: stock }] = await Promise.all([
+    const [{ data: m }, { data: p }, { data: inv }, { data: li }, { data: cat }, { data: stock }, { data: supplierRows }] = await Promise.all([
       supabase.from("stock_movements").select("*, parts(name, sku)").eq("job_id", jobId),
       supabase.from("petty_cash_entries").select("*").eq("job_id", jobId),
       supabase.from("invoices").select("*").eq("job_id", jobId),
       supabase.from("job_line_items").select("*").eq("job_id", jobId).order("position", { ascending: true }),
       supabase.from("parts").select("id, name, sku, unit_price, unit_cost").order("name").limit(2000),
       supabase.from("part_stock").select("part_id, qty"),
+      supabase.from("suppliers").select("id, name, phone, kind, purpose").order("name"),
     ]);
     const { data: mechs } = await supabase.from("mechanics").select("id, name, phone, specialties").eq("active", true).order("name");
     setMechanicsList((mechs ?? []) as any);
@@ -1650,6 +1670,11 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     setInvoicesForJob(invoiceRows);
     setLineItems(li ?? []);
     setPartsCatalog(cat ?? []);
+    setLabourSuppliers(
+      ((supplierRows ?? []) as Array<{ id: string; name: string; phone: string | null; kind: string; purpose: string | null }>)
+        .filter((supplier) => supplier.kind === "labour_supplier" || /labou?r/i.test(supplier.purpose ?? ""))
+        .map(({ id, name, phone }) => ({ id, name, phone })),
+    );
     const paymentDoc = invoiceRows.find((row: any) => row.doc_type === "receipt")
       ?? invoiceRows.find((row: any) => row.doc_type === "invoice")
       ?? invoiceRows.find((row: any) => row.doc_type === "deposit_invoice");
@@ -1740,9 +1765,13 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const partsCost = partsUsed.reduce((s, m) => s + (Number(m.buy_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const partsRevenue = partsUsed.reduce((s, m) => s + (Number(m.sell_price ?? m.unit_price ?? 0) * Number(m.qty ?? 0)), 0);
   const pettyTotal = pettyForJob.reduce((s, e) => s + Number(e.amount ?? 0), 0);
+  const labourSupplierById = new Map(labourSuppliers.map((supplier) => [supplier.id, supplier]));
   const lineSubtotal = calculateLineSubtotal(lineItems);
   const discount = Number(discountAmt || 0);
   const lineTotal = calculateLineTotal(lineItems, discount);
+  const directPaidLabourTotal = lineItems
+    .filter((row) => isDirectPaidOutsourcedLabour(row))
+    .reduce((sum, row) => sum + Number(row.qty || 0) * Number(row.unit_price || 0), 0);
   const profit = lineTotal - partsCost - pettyTotal;
   const depositRequiredValue = Math.max(0, Number(depositRequired || 0));
   const depositPaidValue = Math.max(0, Number(depositPaid || 0));
@@ -1764,44 +1793,69 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const currentStage: DocumentKind =
     canReceipt ? "receipt" : canInvoice ? "invoice" : canDepositInvoice ? "deposit_invoice" : "quotation";
 
-  const buildDocData = (kind: DocumentKind) => kind === "deposit_invoice"
+  const buildJobCardLabourLines = (rows: any[]) =>
+    rows
+      .filter((row) => row.kind === "labour")
+      .map((row) => {
+        const sourceLabel = row.labour_source === "outsourced" ? "Outsourced" : "In-house";
+        const supplier = row.labour_supplier_id ? labourSupplierById.get(String(row.labour_supplier_id)) : null;
+        const payer = row.labour_source === "outsourced"
+          ? row.labour_charge_to === "client"
+            ? "paid by client"
+            : row.labour_payment_mode
+              ? `paid by company via ${String(row.labour_payment_mode).toUpperCase()}`
+              : "paid by company"
+          : null;
+        return [
+          `${sourceLabel}: ${String(row.description ?? "Labour")}`,
+          supplier?.name ? `supplier ${supplier.name}` : null,
+          payer,
+        ].filter(Boolean).join(" · ");
+      });
+
+  const buildDocData = (
+    kind: DocumentKind,
+    jobSnapshot: Job = job,
+    rows: any[] = lineItems,
+    amountPaidValue = totalPaidValue,
+  ) => kind === "deposit_invoice"
     ? ({
-        doc_no: getDocumentNumber(job.job_no, kind),
-        job_no: job.job_no,
-        date: new Date(job.started_at).toISOString().slice(0, 10),
-        customer_name: payerLabel || (job.customer_name ?? ""),
-        customer_phone: job.customer_phone ?? "",
-        plate: job.plate,
+        doc_no: getDocumentNumber(jobSnapshot.job_no, kind),
+        job_no: jobSnapshot.job_no,
+        date: new Date(jobSnapshot.started_at).toISOString().slice(0, 10),
+        customer_name: payerLabel || (jobSnapshot.customer_name ?? ""),
+        customer_phone: jobSnapshot.customer_phone ?? "",
+        plate: jobSnapshot.plate,
         lines: [{
-          description: `Deposit for job ${job.job_no} - ${job.plate}`,
+          description: `Deposit for job ${jobSnapshot.job_no} - ${jobSnapshot.plate}`,
           qty: 1,
           unit_price: depositRequiredValue,
         }],
-        served_by: job.mechanic ?? undefined,
+        served_by: jobSnapshot.mechanic ?? undefined,
         discount: 0,
         amount_paid: depositPaidValue,
         notes: "Deposit requested before work starts.",
         vat: false,
       })
     : ({
-    doc_no: getDocumentNumber(job.job_no, kind),
-    job_no: job.job_no,
+    doc_no: getDocumentNumber(jobSnapshot.job_no, kind),
+    job_no: jobSnapshot.job_no,
     date:
       kind === "receipt"
-        ? String(job.paid_at ?? new Date().toISOString()).slice(0, 10)
+        ? String(jobSnapshot.paid_at ?? new Date().toISOString()).slice(0, 10)
         : kind === "invoice"
-          ? String(job.completed_at ?? job.started_at).slice(0, 10)
-          : new Date(job.started_at).toISOString().slice(0, 10),
-    customer_name: payerLabel || (job.customer_name ?? ""),
-    customer_phone: job.customer_phone ?? "",
-    plate: job.plate,
-    lines: lineItems.length > 0
-      ? lineItems.map((l) => ({ description: `${l.kind === "labour" ? "Labour: " : ""}${l.description}`, qty: Number(l.qty || 0), unit_price: Number(l.unit_price || 0) }))
+          ? String(jobSnapshot.completed_at ?? jobSnapshot.started_at).slice(0, 10)
+          : new Date(jobSnapshot.started_at).toISOString().slice(0, 10),
+    customer_name: payerLabel || (jobSnapshot.customer_name ?? ""),
+    customer_phone: jobSnapshot.customer_phone ?? "",
+    plate: jobSnapshot.plate,
+    lines: getBillableLineItems(rows).length > 0
+      ? getBillableLineItems(rows).map((l) => ({ description: formatBillingLineDescription(l), qty: Number(l.qty || 0), unit_price: Number(l.unit_price || 0) }))
       : [{ description: `${job.service_type ?? "Service"} — ${job.reported_problem ?? job.complaint ?? "Workshop services"}`, qty: 1, unit_price: lineSubtotal || Number(job.estimate || 0) }],
-    served_by: job.mechanic ?? undefined,
+    served_by: jobSnapshot.mechanic ?? undefined,
     discount,
-    amount_paid: kind === "receipt" ? Math.max(0, totalPaidValue - depositPaidValue) : kind === "invoice" ? totalPaidValue : undefined,
-    notes: workPerformed || reportedProblem || job.complaint || undefined,
+    amount_paid: kind === "receipt" ? Math.max(0, amountPaidValue - depositPaidValue) : kind === "invoice" ? amountPaidValue : undefined,
+    notes: workPerformed || reportedProblem || jobSnapshot.complaint || undefined,
     vat: false,
   });
 
@@ -1832,18 +1886,40 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     return String(data.id);
   };
 
-  const openInvoiceDocumentForJob = async (kind: DocumentKind, target?: Window | null) => {
-    const invoiceId = await ensureInvoiceDocumentId(kind);
+  const resolveInvoiceDocumentId = async (kind: DocumentKind) => {
+    const { data, error } = await supabase
+      .from("invoices")
+      .select("id")
+      .eq("job_id", jobId)
+      .eq("doc_type", kind)
+      .maybeSingle();
+    if (error) throw error;
+    if (data?.id) return String(data.id);
+    return ensureInvoiceDocumentId(kind);
+  };
+
+  const storeInvoiceDocumentForJob = async (
+    kind: DocumentKind,
+    jobSnapshot: Job = job,
+    rows: any[] = lineItems,
+    amountPaidValue = totalPaidValue,
+    target?: Window | null,
+    openAfterStore = true,
+  ) => {
+    const invoiceId = await resolveInvoiceDocumentId(kind);
     const stored = await storeInvoiceDocumentPdf({
       invoiceId,
       kind,
-      data: buildDocData(kind),
+      data: buildDocData(kind, jobSnapshot, rows, amountPaidValue),
       paymentMode: kind === "receipt" ? paymentMode : undefined,
       receivedFrom: kind === "receipt" ? payerLabel : undefined,
     });
-    openStoredDocumentUrl(stored.url, target);
+    if (openAfterStore) openStoredDocumentUrl(stored.url, target);
     return stored;
   };
+
+  const openInvoiceDocumentForJob = async (kind: DocumentKind, target?: Window | null) =>
+    storeInvoiceDocumentForJob(kind, job, lineItems, totalPaidValue, target, true);
 
   const openJobCardDocument = async (target?: Window | null) => {
     const stored = await storeJobCardPdf({
@@ -1859,6 +1935,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
           job.ai_diagnostic_summary?.trim(),
           workPerformed.trim() ? `Work performed: ${workPerformed.trim()}` : "",
         ].filter(Boolean).join("\n\n"),
+        labour_lines: buildJobCardLabourLines(lineItems),
         technicians: job.mechanic ?? "",
         paint_color_code: job.paint_color_code ?? undefined,
       },
@@ -2131,18 +2208,73 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
   const syncInvoiceItems = async (invoiceId: string, rows: any[]) => {
     const { error: clearError } = await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
     if (clearError) throw clearError;
-    if (rows.length === 0) return;
+    const billableRows = getBillableLineItems(rows);
+    if (billableRows.length === 0) return;
 
     const { error } = await supabase.from("invoice_items").insert(
-      rows.map((row: any) => ({
+      billableRows.map((row: any) => ({
         invoice_id: invoiceId,
         kind: row.kind ?? "part",
-        description: row.description,
+        description: formatBillingLineDescription(row),
         qty: Number(row.qty || 0),
         unit_price: Number(row.unit_price || 0),
       })),
     );
     if (error) throw error;
+  };
+
+  const syncOutsourcedLabourLedger = async (jobSnapshot: Job, rows: any[]) => {
+    const trackedRows = rows.filter((row) =>
+      row.kind === "labour"
+      && row.labour_source === "outsourced"
+      && row.labour_charge_to !== "client"
+      && row.labour_supplier_id
+      && Number(row.qty || 0) > 0
+      && Number(row.unit_price || 0) > 0,
+    );
+
+    const { data: existingRows, error: existingError } = await supabase
+      .from("supplier_ledger")
+      .select("id, reference")
+      .eq("job_id", jobSnapshot.id)
+      .like("reference", "job-labour:%");
+    if (existingError) throw existingError;
+
+    const existingByReference = new Map(
+      (existingRows ?? []).map((row: any) => [String(row.reference ?? ""), row]),
+    );
+    const activeReferences = new Set(trackedRows.map((row) => `job-labour:${row.id}`));
+    const staleIds = (existingRows ?? [])
+      .filter((row: any) => !activeReferences.has(String(row.reference ?? "")))
+      .map((row: any) => row.id as string);
+
+    if (staleIds.length > 0) {
+      const { error: staleError } = await supabase.from("supplier_ledger").delete().in("id", staleIds);
+      if (staleError) throw staleError;
+    }
+
+    for (const row of trackedRows) {
+      const reference = `job-labour:${row.id}`;
+      const payload = {
+        supplier_id: row.labour_supplier_id,
+        date: String(jobSnapshot.completed_at ?? jobSnapshot.started_at).slice(0, 10),
+        type: "charge",
+        amount: Number(row.qty || 0) * Number(row.unit_price || 0),
+        reference,
+        note: [
+          `Outsourced labour for ${jobSnapshot.job_no}`,
+          row.labour_payment_mode ? `company pays via ${String(row.labour_payment_mode).toUpperCase()}` : null,
+          row.description ? `work: ${row.description}` : null,
+        ].filter(Boolean).join(" · "),
+        job_id: jobSnapshot.id,
+      };
+      const existing = existingByReference.get(reference);
+      const query = existing
+        ? supabase.from("supplier_ledger").update(payload).eq("id", existing.id)
+        : supabase.from("supplier_ledger").insert(payload);
+      const { error } = await query;
+      if (error) throw error;
+    }
   };
 
   const syncJobDocuments = async (jobSnapshot: Job, rows: any[], subtotal: number, total: number, amountPaidValue: number) => {
@@ -2368,6 +2500,7 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     setJob(snapshot);
     try {
       await syncPartLineSales(snapshot, rows);
+      await syncOutsourcedLabourLedger(snapshot, rows);
       await syncJobDocuments(snapshot, rows, subtotal, total, Math.max(0, Number(amountPaidValue || 0)));
     } catch (e: any) {
       toast.error(friendlyErrorMessage(e, "Saved the job, but document sync failed."));
@@ -2428,13 +2561,14 @@ function JobWorkspace({ jobId, onBack, onMoveStatus }: {
     }
     try {
       const gatePass = await ensureGatePass(jobId);
+      await storeInvoiceDocumentForJob("invoice", snapshot, lineItems, totalPaidValue, undefined, false);
       // Trigger PDFs in parallel — receipt and gate pass
       if (paymentBypass) {
         await openGatePassPdf(snapshot, gatePass, totalPaidValue, gatePassWindow);
         toast.success("Payment bypass saved and gate pass link opened");
       } else {
         await Promise.all([
-          openInvoiceDocumentForJob("receipt", receiptWindow),
+          storeInvoiceDocumentForJob("receipt", snapshot, lineItems, totalPaidValue, receiptWindow, true),
           openGatePassPdf(snapshot, gatePass, totalPaidValue, gatePassWindow),
         ]);
         toast.success("Paid and receipt/gate pass links opened");
@@ -2947,10 +3081,11 @@ Golden Automotive Solutions`);
             {canSeeFinances && (
               <div className="border-t pt-4">
                 <h3 className="font-semibold flex items-center gap-2 mb-3"><DollarSign className="h-4 w-4 text-primary" />Profit (live)</h3>
-                <div className="grid grid-cols-3 gap-3 text-sm">
+                <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
                   <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Parts cost</p><p className="font-bold">KSh {partsCost.toLocaleString()}</p></div>
                   <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Total billed</p><p className="font-bold">KSh {lineTotal.toLocaleString()}</p></div>
                   <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Petty cash</p><p className="font-bold">KSh {pettyTotal.toLocaleString()}</p></div>
+                  <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Direct-pay outsourced labour</p><p className="font-bold">KSh {directPaidLabourTotal.toLocaleString()}</p></div>
                 </div>
                 <p className="text-xs text-muted-foreground mt-2">Est. profit ≈ <strong className={profit >= 0 ? "text-success" : "text-destructive"}>KSh {profit.toLocaleString()}</strong></p>
               </div>
@@ -3167,6 +3302,7 @@ Golden Automotive Solutions`);
                     line={l}
                     parts={partsCatalog}
                     stock={partStock}
+                    labourSuppliers={labourSuppliers}
                     onUpdate={(patch) => updateLine(l.id, patch)}
                     onRemove={() => removeLine(l.id)}
                     onPickPart={(pid) => pickPartForLine(l.id, pid)}
@@ -3190,10 +3326,11 @@ Golden Automotive Solutions`);
               </div>
             </div>
 
-            <div className="mt-4 pt-4 border-t grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            <div className="mt-4 pt-4 border-t grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
               <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Subtotal</p><p className="font-bold">KSh {lineSubtotal.toLocaleString()}</p></div>
               <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Discount</p><p className="font-bold text-success">- KSh {discount.toLocaleString()}</p></div>
               <div className="rounded-md bg-primary/10 p-3"><p className="text-xs text-muted-foreground">Total</p><p className="font-bold text-primary">KSh {lineTotal.toLocaleString()}</p></div>
+              <div className="rounded-md bg-muted/40 p-3"><p className="text-xs text-muted-foreground">Direct-pay outsourced labour</p><p className="font-bold">KSh {directPaidLabourTotal.toLocaleString()}</p></div>
             </div>
           </Card>
 
@@ -3505,11 +3642,12 @@ Golden Automotive Solutions`);
 
 // ===== Line item row (Part picker w/ stock check, or Labour) =====
 function LineItemRow({
-  line, parts, stock, onUpdate, onRemove, onPickPart,
+  line, parts, stock, labourSuppliers, onUpdate, onRemove, onPickPart,
 }: {
   line: any;
   parts: any[];
   stock: Record<string, number>;
+  labourSuppliers: Array<{ id: string; name: string; phone: string | null }>;
   onUpdate: (p: any) => void;
   onRemove: () => void;
   onPickPart: (partId: string) => void;
@@ -3562,7 +3700,15 @@ function LineItemRow({
   return (
     <div className="rounded-md border p-3 bg-muted/20 space-y-2">
       <div className="flex items-center gap-2">
-        <Select value={line.kind} onValueChange={(v) => onUpdate({ kind: v, part_id: v === "labour" ? null : line.part_id })}>
+        <Select value={line.kind} onValueChange={(v) => onUpdate({
+          kind: v,
+          part_id: v === "labour" ? null : line.part_id,
+          labour_source: v === "labour" ? (line.labour_source ?? "inhouse") : null,
+          labour_supplier_id: v === "labour" ? (line.labour_supplier_id ?? null) : null,
+          labour_charge_to: v === "labour" ? (line.labour_charge_to ?? "company") : null,
+          labour_payment_mode: v === "labour" ? (line.labour_payment_mode ?? null) : null,
+          labour_payment_reference: v === "labour" ? (line.labour_payment_reference ?? null) : null,
+        })}>
           <SelectTrigger className="w-[110px] h-8"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="part">Part</SelectItem>
@@ -3571,6 +3717,14 @@ function LineItemRow({
         </Select>
         {line.source !== "manual" && (
           <Badge variant="outline" className="text-[10px] capitalize">{line.source}</Badge>
+        )}
+        {isLabour && (
+          <Badge variant="outline" className="text-[10px]">
+            {line.labour_source === "outsourced" ? "Outsourced" : "In-house"}
+          </Badge>
+        )}
+        {isLabour && line.labour_source === "outsourced" && line.labour_charge_to === "client" && (
+          <Badge className="bg-amber-500 text-amber-950 text-[10px]">Direct pay</Badge>
         )}
         {!isLabour && line.part_id && (
           inStock
@@ -3640,6 +3794,89 @@ function LineItemRow({
           placeholder="Unit price"
         />
       </div>
+
+      {isLabour && (
+        <div className="grid gap-2 md:grid-cols-2">
+          <div>
+            <Label className="text-xs">Labour source</Label>
+            <Select
+              value={line.labour_source ?? "inhouse"}
+              onValueChange={(value) => onUpdate({
+                labour_source: value,
+                labour_supplier_id: value === "outsourced" ? (line.labour_supplier_id ?? null) : null,
+                labour_charge_to: value === "outsourced" ? (line.labour_charge_to ?? "company") : "company",
+                labour_payment_mode: value === "outsourced" ? (line.labour_payment_mode ?? null) : null,
+                labour_payment_reference: value === "outsourced" ? (line.labour_payment_reference ?? null) : null,
+              })}
+            >
+              <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inhouse">In-house</SelectItem>
+                <SelectItem value="outsourced">Outsourced</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {line.labour_source === "outsourced" && (
+            <div>
+              <Label className="text-xs">Labour supplier</Label>
+              <Select value={line.labour_supplier_id ?? "__none"} onValueChange={(value) => onUpdate({ labour_supplier_id: value === "__none" ? null : value })}>
+                <SelectTrigger className="h-8"><SelectValue placeholder="Pick labour supplier" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none">No supplier linked</SelectItem>
+                  {labourSuppliers.map((supplier) => (
+                    <SelectItem key={supplier.id} value={supplier.id}>
+                      {supplier.name}{supplier.phone ? ` · ${supplier.phone}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {line.labour_source === "outsourced" && (
+            <div>
+              <Label className="text-xs">Who pays?</Label>
+              <Select value={line.labour_charge_to ?? "company"} onValueChange={(value) => onUpdate({ labour_charge_to: value })}>
+                <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="company">Our company</SelectItem>
+                  <SelectItem value="client">Car owner</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {line.labour_source === "outsourced" && line.labour_charge_to !== "client" && (
+            <div>
+              <Label className="text-xs">Company payment mode</Label>
+              <Select value={line.labour_payment_mode ?? "__none"} onValueChange={(value) => onUpdate({ labour_payment_mode: value === "__none" ? null : value })}>
+                <SelectTrigger className="h-8"><SelectValue placeholder="Select mode" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none">Not set</SelectItem>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="mpesa">M-Pesa</SelectItem>
+                  <SelectItem value="bank">Bank transfer</SelectItem>
+                  <SelectItem value="card">Card</SelectItem>
+                  <SelectItem value="cheque">Cheque</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {line.labour_source === "outsourced" && line.labour_charge_to !== "client" && (
+            <div className="md:col-span-2">
+              <Label className="text-xs">Company payment reference</Label>
+              <Input
+                className="h-8 text-sm"
+                value={line.labour_payment_reference ?? ""}
+                onChange={(e) => onUpdate({ labour_payment_reference: e.target.value })}
+                placeholder="M-Pesa code / cash voucher / bank ref"
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

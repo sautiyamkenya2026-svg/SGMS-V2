@@ -30,9 +30,10 @@ import {
   closeReservedDocumentWindow,
   openStoredDocumentUrl,
   reserveDocumentWindow,
-  storeGeneratedTextFile,
+  storeGeneratedPdfFile,
 } from "@/lib/document-storage";
 import { useAuth } from "@/lib/auth";
+import { generateAttendanceSheetPDF } from "@/lib/pdf-templates";
 import { toast } from "sonner";
 
 type StaffRoleRow = {
@@ -64,11 +65,6 @@ type Staff = StaffProfileRow & {
   role: string | null;
   last_event?: AttendanceRow | null;
 };
-
-function csvEscape(value: string | null | undefined) {
-  const text = String(value ?? "");
-  return `"${text.replaceAll('"', '""')}"`;
-}
 
 export default function Attendance() {
   const { user, hasRole } = useAuth();
@@ -236,35 +232,41 @@ export default function Attendance() {
       toast.error("No attendance rows match the current filters.");
       return;
     }
-
-    const lines = [
-      ["Date", "Time", "Staff", "Email", "Role", "Event", "Method", "Recorded By", "Recorder Role", "Device"].join(","),
-      ...filteredEntries.map((entry) => {
-        const member = staff.find((row) => row.id === entry.user_id);
-        const date = new Date(entry.created_at);
-        return [
-          csvEscape(date.toLocaleDateString("en-GB")),
-          csvEscape(date.toLocaleTimeString("en-GB")),
-          csvEscape(member?.display_name ?? entry.user_id),
-          csvEscape(member?.email ?? ""),
-          csvEscape(member?.role ?? ""),
-          csvEscape(entry.event === "check_in" ? "IN" : "OUT"),
-          csvEscape(entry.method),
-          csvEscape(entry.recorded_by_name ?? ""),
-          csvEscape(entry.recorded_by_role ?? ""),
-          csvEscape(entry.device_label ?? ""),
-        ].join(",");
-      }),
-    ];
-
-    const fileName = `attendance-${dayFilter || monthFilter || toLocalDateValue()}.csv`;
+    const periodLabel = dayFilter || monthFilter || toLocalDateValue();
+    const fileName = `attendance-${periodLabel}.pdf`;
     const target = reserveDocumentWindow();
     try {
-      const stored = await storeGeneratedTextFile({
+      const pdf = await generateAttendanceSheetPDF({
+        period_label: periodLabel,
+        generated_by: user?.displayName,
+        staff_filter:
+          selectedUserId === "all"
+            ? "All staff"
+            : staff.find((member) => member.id === selectedUserId)?.display_name
+              ?? staff.find((member) => member.id === selectedUserId)?.email
+              ?? "Selected staff",
+        search: q,
+        total_rows: filteredEntries.length,
+        rows: filteredEntries.map((entry) => {
+          const member = staff.find((row) => row.id === entry.user_id);
+          const date = new Date(entry.created_at);
+          return {
+            date: date.toLocaleDateString("en-GB"),
+            time: date.toLocaleTimeString("en-GB"),
+            staff: member?.display_name ?? entry.user_id,
+            email: member?.email ?? "",
+            role: member?.role ?? "",
+            event: entry.event === "check_in" ? "IN" : "OUT",
+            method: entry.method,
+            recorded_by: entry.recorded_by_name ?? "",
+            recorder_role: entry.recorded_by_role ?? "",
+            device: entry.device_label ?? "",
+          };
+        }),
+      }, { mode: "blob" });
+      const stored = await storeGeneratedPdfFile({
         path: `reports/attendance/${fileName}`,
-        fileName,
-        contents: lines.join("\n"),
-        contentType: "text/csv;charset=utf-8;",
+        pdf,
       });
       openStoredDocumentUrl(stored.url, target);
       toast.success("Attendance export ready");

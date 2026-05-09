@@ -26,6 +26,7 @@ type StaffProfileRow = {
   id: string;
   display_name: string | null;
   email: string | null;
+  phone: string | null;
 };
 
 type AttendanceRow = {
@@ -51,6 +52,13 @@ type PayrollRateRow = {
   monthly_salary: number;
 };
 
+type PettyCashAdvanceRow = {
+  id: string;
+  staff_user_id: string | null;
+  amount: number;
+  date: string;
+};
+
 type StaffMember = StaffProfileRow & {
   roles: string[];
   primaryRole: string | null;
@@ -74,7 +82,9 @@ type StaffSummary = {
   excusedDays: number;
   unknownDays: number;
   payableDays: number;
+  advancePaid: number;
   payableAmount: number;
+  netPay: number;
   dayRows: StaffDayRow[];
 };
 
@@ -87,6 +97,7 @@ export default function Payroll() {
   const [attendance, setAttendance] = useState<AttendanceRow[]>([]);
   const [exceptions, setExceptions] = useState<AttendanceExceptionRow[]>([]);
   const [rates, setRates] = useState<PayrollRateRow[]>([]);
+  const [pettyCashAdvances, setPettyCashAdvances] = useState<PettyCashAdvanceRow[]>([]);
   const [salaryDrafts, setSalaryDrafts] = useState<Record<string, string>>({});
   const [reasonDrafts, setReasonDrafts] = useState<Record<string, string>>({});
   const [selectedUserId, setSelectedUserId] = useState("");
@@ -101,8 +112,8 @@ export default function Payroll() {
   const load = async () => {
     setLoading(true);
     try {
-      const [{ data: profiles }, { data: roles }, { data: log }, { data: excuseRows }, { data: rateRows }] = await Promise.all([
-        supabase.from("profiles").select("id, display_name, email").order("display_name"),
+      const [{ data: profiles }, { data: roles }, { data: log }, { data: excuseRows }, { data: rateRows }, { data: pettyRows }] = await Promise.all([
+        supabase.from("profiles").select("id, display_name, email, phone").order("display_name"),
         supabase.from("user_roles").select("user_id, role"),
         supabase
           .from("staff_attendance")
@@ -120,6 +131,13 @@ export default function Payroll() {
           .from("staff_payroll_rates")
           .select("id, user_id, month, monthly_salary")
           .eq("month", start),
+        supabase
+          .from("petty_cash_entries")
+          .select("id, staff_user_id, amount, date")
+          .eq("type", "payment")
+          .gte("date", start)
+          .lte("date", end)
+          .not("staff_user_id", "is", null),
       ]);
 
       const typedRoles = (roles ?? []) as StaffRoleRow[];
@@ -140,6 +158,7 @@ export default function Payroll() {
       setAttendance((log ?? []) as AttendanceRow[]);
       setExceptions((excuseRows ?? []) as AttendanceExceptionRow[]);
       setRates((rateRows ?? []) as PayrollRateRow[]);
+      setPettyCashAdvances((pettyRows ?? []) as PettyCashAdvanceRow[]);
       setSalaryDrafts(
         Object.fromEntries(
           nextStaff.map((member) => {
@@ -179,6 +198,12 @@ export default function Payroll() {
       exceptionsByUserDay.set(`${row.user_id}:${row.day}`, row);
     });
 
+    const advancesByUser = new Map<string, number>();
+    pettyCashAdvances.forEach((row) => {
+      if (!row.staff_user_id) return;
+      advancesByUser.set(row.staff_user_id, (advancesByUser.get(row.staff_user_id) ?? 0) + Number(row.amount || 0));
+    });
+
     return staff.map((member) => {
       const memberEntries = entriesByUser.get(member.id) ?? [];
       const entriesByDay = new Map<string, AttendanceRow[]>();
@@ -190,6 +215,7 @@ export default function Payroll() {
       const rate = rates.find((row) => row.user_id === member.id);
       const monthlySalary = Number(rate?.monthly_salary ?? 0);
       const dailyRate = daysInMonth > 0 ? monthlySalary / daysInMonth : 0;
+      const advancePaid = advancesByUser.get(member.id) ?? 0;
 
       let presentDays = 0;
       let excusedDays = 0;
@@ -232,6 +258,7 @@ export default function Payroll() {
       });
 
       const payableDays = presentDays + excusedDays;
+      const payableAmount = payableDays * dailyRate;
       return {
         staff: member,
         monthlySalary,
@@ -240,11 +267,13 @@ export default function Payroll() {
         excusedDays,
         unknownDays,
         payableDays,
-        payableAmount: payableDays * dailyRate,
+        advancePaid,
+        payableAmount,
+        netPay: Math.max(0, payableAmount - advancePaid),
         dayRows,
       };
     });
-  }, [attendance, daysInMonth, exceptions, monthDays, rates, staff, today]);
+  }, [attendance, daysInMonth, exceptions, monthDays, pettyCashAdvances, rates, staff, today]);
 
   const selectedSummary = summaries.find((row) => row.staff.id === selectedUserId) ?? null;
 
@@ -252,11 +281,13 @@ export default function Payroll() {
     return summaries.reduce(
       (acc, row) => ({
         totalPayroll: acc.totalPayroll + row.payableAmount,
+        totalAdvances: acc.totalAdvances + row.advancePaid,
+        netPayroll: acc.netPayroll + row.netPay,
         presentDays: acc.presentDays + row.presentDays,
         excusedDays: acc.excusedDays + row.excusedDays,
         unknownDays: acc.unknownDays + row.unknownDays,
       }),
-      { totalPayroll: 0, presentDays: 0, excusedDays: 0, unknownDays: 0 },
+      { totalPayroll: 0, totalAdvances: 0, netPayroll: 0, presentDays: 0, excusedDays: 0, unknownDays: 0 },
     );
   }, [summaries]);
 
@@ -393,16 +424,16 @@ export default function Payroll() {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Card className="p-4">
-          <p className="text-xs uppercase text-muted-foreground">Payroll due</p>
+          <p className="text-xs uppercase text-muted-foreground">Gross payroll</p>
           <p className="mt-1 text-2xl font-bold">{fmtMoney(totals.totalPayroll)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs uppercase text-muted-foreground">Present days</p>
-          <p className="mt-1 text-2xl font-bold text-success">{totals.presentDays}</p>
+          <p className="text-xs uppercase text-muted-foreground">Already paid</p>
+          <p className="mt-1 text-2xl font-bold text-primary">{fmtMoney(totals.totalAdvances)}</p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs uppercase text-muted-foreground">Excused days</p>
-          <p className="mt-1 text-2xl font-bold text-primary">{totals.excusedDays}</p>
+          <p className="text-xs uppercase text-muted-foreground">Net payroll due</p>
+          <p className="mt-1 text-2xl font-bold text-success">{fmtMoney(totals.netPayroll)}</p>
         </Card>
         <Card className="p-4">
           <p className="text-xs uppercase text-muted-foreground">Unknown unpaid days</p>
@@ -425,18 +456,20 @@ export default function Payroll() {
                 <th className="p-3 text-right">Present</th>
                 <th className="p-3 text-right">Excused</th>
                 <th className="p-3 text-right">Unknown</th>
-                <th className="p-3">Payable</th>
+                <th className="p-3">Gross pay</th>
+                <th className="p-3">Already paid</th>
+                <th className="p-3">Net pay</th>
                 <th className="p-3 text-right">Action</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="p-8 text-center text-muted-foreground">Loading...</td>
+                  <td colSpan={11} className="p-8 text-center text-muted-foreground">Loading...</td>
                 </tr>
               ) : summaries.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-8 text-center text-muted-foreground">No staff available for payroll.</td>
+                  <td colSpan={11} className="p-8 text-center text-muted-foreground">No staff available for payroll.</td>
                 </tr>
               ) : summaries.map((summary) => (
                 <tr
@@ -462,6 +495,8 @@ export default function Payroll() {
                   <td className="p-3 text-right text-primary">{summary.excusedDays}</td>
                   <td className="p-3 text-right text-destructive">{summary.unknownDays}</td>
                   <td className="p-3 font-bold">{fmtMoney(summary.payableAmount)}</td>
+                  <td className="p-3 font-medium text-primary">{fmtMoney(summary.advancePaid)}</td>
+                  <td className="p-3 font-bold text-success">{fmtMoney(summary.netPay)}</td>
                   <td className="p-3 text-right">
                     <div className="flex justify-end gap-2">
                       <Button size="sm" variant="outline" onClick={() => setSelectedUserId(summary.staff.id)}>
@@ -504,7 +539,13 @@ export default function Payroll() {
                   <UserRoundCheck className="h-3 w-3" /> Payable days: {selectedSummary.payableDays}
                 </Badge>
                 <Badge variant="outline" className="gap-1">
-                  <Wallet className="h-3 w-3" /> Pay: {fmtMoney(selectedSummary.payableAmount)}
+                  <Wallet className="h-3 w-3" /> Gross: {fmtMoney(selectedSummary.payableAmount)}
+                </Badge>
+                <Badge variant="outline" className="gap-1">
+                  <Coins className="h-3 w-3" /> Already paid: {fmtMoney(selectedSummary.advancePaid)}
+                </Badge>
+                <Badge variant="outline" className="gap-1">
+                  <Wallet className="h-3 w-3" /> Net: {fmtMoney(selectedSummary.netPay)}
                 </Badge>
               </div>
             </div>

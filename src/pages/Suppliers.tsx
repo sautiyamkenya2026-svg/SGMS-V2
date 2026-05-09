@@ -15,6 +15,7 @@ type Supplier = { id: string; name: string; phone: string | null; kind: string; 
 type Ledger = { id: string; supplier_id: string; date: string; type: string; amount: number; reference: string | null; note: string | null };
 type Part = { id: string; name: string; sku: string; unit_cost: number; unit_price: number };
 type Loc  = { id: string; name: string; kind: string };
+type JobOption = { id: string; job_no: string; plate: string; vehicle_label: string | null; status: string };
 
 const fmt = (n: number) => `KSh ${Number(n).toLocaleString()}`;
 
@@ -27,25 +28,28 @@ export default function Suppliers() {
   const [openPay, setOpenPay] = useState<Supplier | null>(null);
   const [openCharge, setOpenCharge] = useState<Supplier | null>(null);
   const [supForm, setSupForm] = useState({ name: "", phone: "", kind: "external", location: "", purpose: "", notes: "", opening_balance: "" });
-  const [txnForm, setTxnForm] = useState({ amount: "", reference: "", note: "", date: new Date().toISOString().slice(0, 10) });
+  const [txnForm, setTxnForm] = useState({ amount: "", reference: "", note: "", date: new Date().toISOString().slice(0, 10), job_id: "" });
   const [chargeParts, setChargeParts] = useState<Part[]>([]);
   const [locs, setLocs] = useState<Loc[]>([]);
+  const [jobs, setJobs] = useState<JobOption[]>([]);
   const [chargeForm, setChargeForm] = useState({
     part_id: "" as string, qty: "", buy_price: "", sell_price: "", location_id: "" as string,
   });
 
   const load = async () => {
     setLoading(true);
-    const [{ data: sd }, { data: ld }, { data: pd }, { data: lod }] = await Promise.all([
+    const [{ data: sd }, { data: ld }, { data: pd }, { data: lod }, { data: jd }] = await Promise.all([
       supabase.from("suppliers").select("*").order("name"),
       supabase.from("supplier_ledger").select("*").order("date", { ascending: false }),
       supabase.from("parts").select("id,name,sku,unit_cost,unit_price").order("name"),
       supabase.from("locations").select("id,name,kind").order("name"),
+      supabase.from("jobs").select("id, job_no, plate, vehicle_label, status").order("created_at", { ascending: false }).limit(300),
     ]);
     setSuppliers((sd ?? []) as Supplier[]);
     setLedger((ld ?? []) as Ledger[]);
     setChargeParts((pd ?? []) as Part[]);
     setLocs((lod ?? []) as Loc[]);
+    setJobs((jd ?? []) as JobOption[]);
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
@@ -114,6 +118,7 @@ export default function Suppliers() {
     const payload: any = {
       supplier_id: sup.id, date: txnForm.date, type: kind,
       reference: txnForm.reference || null, note: txnForm.note || null,
+      job_id: txnForm.job_id || null,
     };
     if (kind === "charge" && chargeForm.part_id) {
       const qty = Number(chargeForm.qty || 0);
@@ -139,7 +144,7 @@ export default function Suppliers() {
         : undefined,
     });
     setOpenPay(null); setOpenCharge(null);
-    setTxnForm({ amount: "", reference: "", note: "", date: new Date().toISOString().slice(0, 10) });
+    setTxnForm({ amount: "", reference: "", note: "", date: new Date().toISOString().slice(0, 10), job_id: "" });
     setChargeForm({ part_id: "", qty: "", buy_price: "", sell_price: "", location_id: "" });
     load();
   };
@@ -167,6 +172,7 @@ export default function Suppliers() {
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="external">External</SelectItem>
+                      <SelectItem value="labour_supplier">Labour supplier</SelectItem>
                       <SelectItem value="internal_shop">Internal — Nairobi shop</SelectItem>
                       <SelectItem value="internal_garage">Internal — Garage store</SelectItem>
                     </SelectContent>
@@ -240,6 +246,7 @@ export default function Suppliers() {
                   <td className="p-3 font-medium">{s.name}</td>
                   <td className="p-3">
                     {s.kind === "external" ? <Badge variant="secondary">External</Badge>
+                     : s.kind === "labour_supplier" ? <Badge className="bg-amber-500 text-amber-950">Labour supplier</Badge>
                      : s.kind === "internal_shop" ? <Badge className="bg-status-diagnosed text-primary-foreground">Nairobi shop</Badge>
                      : <Badge className="bg-gradient-primary text-primary-foreground">Garage store</Badge>}
                   </td>
@@ -268,6 +275,19 @@ export default function Suppliers() {
             <div className="grid grid-cols-2 gap-3">
               <div><Label>Date</Label><Input type="date" value={txnForm.date} onChange={e => setTxnForm({ ...txnForm, date: e.target.value })} /></div>
               <div><Label>Amount (KSh)</Label><Input type="number" value={txnForm.amount} onChange={e => setTxnForm({ ...txnForm, amount: e.target.value })} /></div>
+            </div>
+            <div>
+              <Label>Assign car / job (optional)</Label>
+              <Select value={txnForm.job_id} onValueChange={v => setTxnForm({ ...txnForm, job_id: v })}>
+                <SelectTrigger><SelectValue placeholder="No car assigned" /></SelectTrigger>
+                <SelectContent>
+                  {jobs.map((job) => (
+                    <SelectItem key={job.id} value={job.id}>
+                      {job.plate} · {job.job_no} · {job.vehicle_label ?? job.status}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div><Label>Reference</Label><Input value={txnForm.reference} onChange={e => setTxnForm({ ...txnForm, reference: e.target.value })} placeholder="M-Pesa code, cheque #" /></div>
             <div><Label>Note</Label><Textarea value={txnForm.note} onChange={e => setTxnForm({ ...txnForm, note: e.target.value })} /></div>
@@ -330,6 +350,19 @@ export default function Suppliers() {
             <div className="grid grid-cols-2 gap-3">
               <div><Label>Date</Label><Input type="date" value={txnForm.date} onChange={e => setTxnForm({ ...txnForm, date: e.target.value })} /></div>
               <div><Label>Amount (KSh)</Label><Input type="number" disabled={!!chargeForm.part_id} value={chargeForm.part_id ? String(Number(chargeForm.qty||0) * Number(chargeForm.buy_price||0) || "") : txnForm.amount} onChange={e => setTxnForm({ ...txnForm, amount: e.target.value })} placeholder={chargeForm.part_id ? "Auto from qty × buy price" : ""} /></div>
+            </div>
+            <div>
+              <Label>Assign car / job (optional)</Label>
+              <Select value={txnForm.job_id} onValueChange={v => setTxnForm({ ...txnForm, job_id: v })}>
+                <SelectTrigger><SelectValue placeholder="No car assigned" /></SelectTrigger>
+                <SelectContent>
+                  {jobs.map((job) => (
+                    <SelectItem key={job.id} value={job.id}>
+                      {job.plate} · {job.job_no} · {job.vehicle_label ?? job.status}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div><Label>Reference</Label><Input value={txnForm.reference} onChange={e => setTxnForm({ ...txnForm, reference: e.target.value })} placeholder="Invoice #, delivery note" /></div>
             <div><Label>Note</Label><Textarea value={txnForm.note} onChange={e => setTxnForm({ ...txnForm, note: e.target.value })} placeholder="What was supplied" /></div>

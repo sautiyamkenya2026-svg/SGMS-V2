@@ -44,6 +44,25 @@ async function loadLogo(): Promise<string> {
   return (loadLogo as any)._cache as Promise<string>;
 }
 
+function withOpacity(doc: jsPDF, opacity: number, draw: () => void) {
+  const anyDoc = doc as any;
+  const supportsOpacity =
+    typeof anyDoc.GState === "function"
+    && typeof anyDoc.setGState === "function"
+    && typeof anyDoc.saveGraphicsState === "function"
+    && typeof anyDoc.restoreGraphicsState === "function";
+
+  if (!supportsOpacity) {
+    draw();
+    return;
+  }
+
+  anyDoc.saveGraphicsState();
+  anyDoc.setGState(new anyDoc.GState({ opacity }));
+  draw();
+  anyDoc.restoreGraphicsState();
+}
+
 function fmtKsh(n: number) {
   return `KSh ${Number(n || 0).toLocaleString("en-KE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -61,14 +80,19 @@ async function drawDocumentWatermark(doc: jsPDF) {
     const logo = await loadLogo();
     const logoW = Math.min(92, w - 30);
     const logoH = logoW / 3.4;
-    doc.addImage(logo, "PNG", (w - logoW) / 2, (h - logoH) / 2 - 8, logoW, logoH);
+    withOpacity(doc, 0.08, () => {
+      doc.addImage(logo, "PNG", (w - logoW) / 2, (h - logoH) / 2 - 10, logoW, logoH);
+    });
   } catch {
     // ignore logo issues and still draw the soft text mark below
   }
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
-  doc.setTextColor(212, 160, 23);
-  doc.text("Golden Automotive Solutions", w / 2, h / 2 + 24, { align: "center" });
+  withOpacity(doc, 0.08, () => {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(Math.max(22, Math.min(34, w / 4)));
+    doc.setTextColor(212, 160, 23);
+    doc.text("GOLDEN AUTOMOTIVE", w / 2, h / 2 - 6, { align: "center", angle: 28 });
+    doc.text("SOLUTIONS", w / 2, h / 2 + 10, { align: "center", angle: 28 });
+  });
 }
 
 // Centred A5 header: logo top-middle, then company name perfectly centred,
@@ -453,6 +477,7 @@ export interface JobCardData {
   accessories?: string[];
   valuables?: string;
   paint_color_code?: string;
+  labour_lines?: string[];
 }
 
 export async function generateJobCardPDF(data: JobCardData, options: PdfBuildOptions = {}) {
@@ -496,6 +521,9 @@ export async function generateJobCardPDF(data: JobCardData, options: PdfBuildOpt
 
   block("CUSTOMER COMPLAINT", data.customer_complaint ?? "");
   block("TECHNICIAN DIAGNOSIS", data.technician_diagnosis ?? "");
+  if ((data.labour_lines ?? []).length > 0) {
+    block("LABOUR", (data.labour_lines ?? []).join("\n"));
+  }
   block("ACCESSORIES", (data.accessories ?? []).join(", "));
   block("VALUABLES", data.valuables ?? "");
   block("TECHNICIAN(S)", data.technicians ?? "");
@@ -638,9 +666,89 @@ export async function generateGatePassPDF(data: GatePassData, options: PdfBuildO
   return finalizePdf(doc, `GatePass-${data.pass_no}.pdf`, options);
 }
 
+export interface AttendanceSheetRow {
+  date: string;
+  time: string;
+  staff: string;
+  email?: string | null;
+  role?: string | null;
+  event: string;
+  method: string;
+  recorded_by?: string | null;
+  recorder_role?: string | null;
+  device?: string | null;
+}
+
+export interface AttendanceSheetData {
+  period_label: string;
+  generated_by?: string;
+  staff_filter?: string;
+  search?: string;
+  total_rows: number;
+  rows: AttendanceSheetRow[];
+}
+
+export async function generateAttendanceSheetPDF(data: AttendanceSheetData, options: PdfBuildOptions = {}) {
+  const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "landscape" });
+  await drawDocumentWatermark(doc);
+  const headerY = await drawHeader(doc, "ATTENDANCE SHEET");
+  const w = doc.internal.pageSize.getWidth();
+  const half = (w - 8 - 8 - 4) / 2;
+
+  drawMetaBox(doc, [
+    ["Period", data.period_label],
+    ["Staff", data.staff_filter ?? "All staff"],
+    ["Search", data.search?.trim() || "—"],
+  ], 8, headerY, half);
+  drawMetaBox(doc, [
+    ["Generated", new Date().toLocaleString()],
+    ["By", data.generated_by ?? "—"],
+    ["Rows", String(data.total_rows)],
+  ], 8 + half + 4, headerY, half);
+
+  autoTable(doc, {
+    startY: headerY + 22,
+    head: [["DATE", "TIME", "STAFF", "EMAIL", "ROLE", "EVENT", "METHOD", "RECORDED BY", "DEVICE"]],
+    body: data.rows.length
+      ? data.rows.map((row) => [
+          row.date,
+          row.time,
+          row.staff,
+          row.email ?? "—",
+          row.role ?? "—",
+          row.event,
+          row.method,
+          [row.recorded_by ?? "—", row.recorder_role ?? ""].filter(Boolean).join(" · "),
+          row.device ?? "—",
+        ])
+      : [["", "", "", "", "", "(no attendance rows)", "", "", ""]],
+    theme: "grid",
+    headStyles: { fillColor: BROWN, textColor: 255, fontStyle: "bold", fontSize: 8, halign: "center" },
+    bodyStyles: { fontSize: 7.5, textColor: DARK },
+    columnStyles: {
+      0: { cellWidth: 22 },
+      1: { cellWidth: 20 },
+      5: { cellWidth: 18, halign: "center" },
+      6: { cellWidth: 22, halign: "center" },
+      7: { cellWidth: 34 },
+      8: { cellWidth: 42 },
+    },
+    margin: { left: 8, right: 8 },
+  });
+
+  const pageCount = (doc as any).internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    drawFooter(doc, `Attendance Sheet · ${data.period_label} · Page ${i} of ${pageCount}`);
+  }
+
+  return finalizePdf(doc, `Attendance-${data.period_label.replace(/[^\w.-]+/g, "_")}.pdf`, options);
+}
+
 // ----- PETTY CASH REPORT -----
 export interface PettyCashRow {
   date: string;
+  transaction_time?: string | null;
   type: "opening_balance" | "payment" | "topup";
   payee?: string | null;
   contact?: string | null;
@@ -660,6 +768,7 @@ export interface PettyCashReportData {
 
 export async function generatePettyCashReportPDF(data: PettyCashReportData, options: PdfBuildOptions = {}) {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
+  await drawDocumentWatermark(doc);
   const headerY = await drawHeader(doc, "PETTY CASH REPORT");
   const w = doc.internal.pageSize.getWidth();
 
@@ -689,13 +798,14 @@ export async function generatePettyCashReportPDF(data: PettyCashReportData, opti
 
   autoTable(doc, {
     startY: headerY + 18,
-    head: [["DATE", "TYPE", "PAYEE / SOURCE", "CONTACT", "DETAILS", "MODE / REF", "IN", "OUT", "TXN COST"]],
+    head: [["DATE", "TIME", "TYPE", "PAYEE / SOURCE", "CONTACT", "DETAILS", "MODE / REF", "IN", "OUT", "TXN COST"]],
     body: data.rows.length ? data.rows.map(r => {
       const isIn = r.type === "topup" || r.type === "opening_balance";
       const typeLabel = r.type === "opening_balance" ? "Opening" : r.type === "topup" ? "Top-up" : "Payment";
       const modeRef = [r.payment_mode ?? "", r.payment_reference ?? ""].filter(Boolean).join(" · ");
       return [
         r.date,
+        r.transaction_time ?? "—",
         typeLabel,
         r.payee ?? "—",
         r.contact ?? "—",
@@ -705,17 +815,18 @@ export async function generatePettyCashReportPDF(data: PettyCashReportData, opti
         !isIn ? fmtKsh(Number(r.amount)) : "",
         r.transaction_cost ? fmtKsh(Number(r.transaction_cost)) : "—",
       ];
-    }) : [["", "", "", "", "(no entries in range)", "", "", "", ""]],
+    }) : [["", "", "", "", "", "(no entries in range)", "", "", "", ""]],
     theme: "grid",
     headStyles: { fillColor: BROWN, textColor: 255, fontStyle: "bold", fontSize: 8, halign: "center" },
     bodyStyles: { fontSize: 7.5, textColor: DARK },
     columnStyles: {
       0: { cellWidth: 18 },
-      1: { cellWidth: 16 },
-      3: { cellWidth: 22 },
-      6: { cellWidth: 20, halign: "right" },
+      1: { cellWidth: 18 },
+      2: { cellWidth: 16 },
+      4: { cellWidth: 22 },
       7: { cellWidth: 20, halign: "right" },
-      8: { cellWidth: 18, halign: "right" },
+      8: { cellWidth: 20, halign: "right" },
+      9: { cellWidth: 18, halign: "right" },
     },
     margin: { left: 8, right: 8 },
   });

@@ -63,7 +63,15 @@ export type Database = {
           updated_at?: string
           value?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "job_line_items_labour_supplier_id_fkey"
+            columns: ["labour_supplier_id"]
+            isOneToOne: false
+            referencedRelation: "suppliers"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       clients: {
         Row: {
@@ -610,6 +618,11 @@ export type Database = {
           id: string
           job_id: string
           kind: string
+          labour_charge_to: string
+          labour_payment_mode: string | null
+          labour_payment_reference: string | null
+          labour_source: string
+          labour_supplier_id: string | null
           part_id: string | null
           part_request_id: string | null
           position: number
@@ -624,6 +637,11 @@ export type Database = {
           id?: string
           job_id: string
           kind?: string
+          labour_charge_to?: string
+          labour_payment_mode?: string | null
+          labour_payment_reference?: string | null
+          labour_source?: string
+          labour_supplier_id?: string | null
           part_id?: string | null
           part_request_id?: string | null
           position?: number
@@ -638,6 +656,11 @@ export type Database = {
           id?: string
           job_id?: string
           kind?: string
+          labour_charge_to?: string
+          labour_payment_mode?: string | null
+          labour_payment_reference?: string | null
+          labour_source?: string
+          labour_supplier_id?: string | null
           part_id?: string | null
           part_request_id?: string | null
           position?: number
@@ -1221,6 +1244,7 @@ export type Database = {
           payee: string | null
           payment_mode: string
           payment_reference: string | null
+          staff_user_id: string | null
           transaction_time: string | null
           transaction_cost: number
           type: string
@@ -1237,6 +1261,7 @@ export type Database = {
           payee?: string | null
           payment_mode?: string
           payment_reference?: string | null
+          staff_user_id?: string | null
           transaction_time?: string | null
           transaction_cost?: number
           type?: string
@@ -1253,6 +1278,7 @@ export type Database = {
           payee?: string | null
           payment_mode?: string
           payment_reference?: string | null
+          staff_user_id?: string | null
           transaction_time?: string | null
           transaction_cost?: number
           type?: string
@@ -1263,6 +1289,13 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: false
             referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "petty_cash_entries_staff_user_id_fkey"
+            columns: ["staff_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
         ]

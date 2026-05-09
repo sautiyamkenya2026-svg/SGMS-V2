@@ -131,6 +131,16 @@ export async function storeGeneratedTextFile({
   return uploadGeneratedFile({ path, file, fileName, contentType });
 }
 
+export async function storeGeneratedPdfFile({
+  path,
+  pdf,
+}: {
+  path: string;
+  pdf: GeneratedPdfFile;
+}) {
+  return uploadPdf(path, pdf);
+}
+
 export function reserveDocumentWindow() {
   if (typeof window === "undefined") return null;
   try {

@@ -20,6 +20,7 @@ import { invokeEdgeFunction } from "@/lib/invoke-edge";
 
 type Entry = {
   id: string;
+  created_at: string;
   date: string;
   type: "opening_balance" | "payment" | "topup";
   payee: string | null;
@@ -30,7 +31,22 @@ type Entry = {
   payment_reference?: string | null;
   contact?: string | null;
   transaction_time?: string | null;
+  staff_user_id?: string | null;
 };
+
+type StaffRoleRow = {
+  user_id: string;
+  role: string;
+};
+
+type StaffDirectoryEntry = {
+  id: string;
+  display_name: string | null;
+  phone: string | null;
+  roles: string[];
+};
+
+type RangePreset = "today" | "yesterday" | "this_month" | "last_month" | "all" | "custom";
 
 type PettyCashAISuggestion = {
   direction?: "sent" | "received" | "unknown";
@@ -54,6 +70,44 @@ const normalizeTransactionTime = (value: string | null | undefined) =>
 const isMpesaMode = (value: string | null | undefined) => String(value ?? "").trim().toLowerCase() === "mpesa";
 const isDuplicateTransactionError = (error: { code?: string | null; message?: string | null } | null | undefined) =>
   error?.code === "23505" || String(error?.message ?? "").toLowerCase().includes("transaction already exists");
+const toDateInputValue = (value = new Date()) => value.toLocaleDateString("en-CA");
+const normalizePhoneKey = (value: string | null | undefined) => String(value ?? "").replace(/\D/g, "").slice(-9);
+const normalizeNameKey = (value: string | null | undefined) =>
+  String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const entryDelta = (entry: Pick<Entry, "type" | "amount" | "transaction_cost">) => {
+  const amount = Number(entry.amount || 0);
+  const cost = Number(entry.transaction_cost || 0);
+  if (entry.type === "opening_balance") return amount;
+  if (entry.type === "topup") return amount - cost;
+  return -(amount + cost);
+};
+
+function getRangeFromPreset(preset: Exclude<RangePreset, "custom">) {
+  const today = new Date();
+  const todayValue = toDateInputValue(today);
+  if (preset === "all") return { from: "", to: "" };
+  if (preset === "today") return { from: todayValue, to: todayValue };
+  if (preset === "yesterday") {
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const value = toDateInputValue(yesterday);
+    return { from: value, to: value };
+  }
+  if (preset === "this_month") {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { from: toDateInputValue(start), to: todayValue };
+  }
+  const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const end = new Date(today.getFullYear(), today.getMonth(), 0);
+  return { from: toDateInputValue(start), to: toDateInputValue(end) };
+}
+
+function sortEntriesNewestFirst<T extends Pick<Entry, "date" | "created_at">>(rows: T[]) {
+  return [...rows].sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+}
 
 // Contact is appended into details as "Contact: …" — parse it back out for display & PDF.
 function splitContact(details: string | null): { details: string | null; contact: string | null } {
@@ -67,14 +121,17 @@ function splitContact(details: string | null): { details: string | null; contact
 
 export default function PettyCash() {
   const { user } = useAuth();
+  const initialRange = getRangeFromPreset("today");
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [staffDirectory, setStaffDirectory] = useState<StaffDirectoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  const [fromDate, setFromDate] = useState<string>("");
-  const [toDate, setToDate] = useState<string>("");
+  const [rangePreset, setRangePreset] = useState<RangePreset>("today");
+  const [fromDate, setFromDate] = useState<string>(initialRange.from);
+  const [toDate, setToDate] = useState<string>(initialRange.to);
   const [form, setForm] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: initialRange.to || toDateInputValue(),
     type: "payment" as Entry["type"],
     payee: "",
     contact: "",
@@ -98,17 +155,113 @@ export default function PettyCash() {
 
   const load = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("petty_cash_entries")
-      .select("*")
-      .order("date", { ascending: false })
-      .order("created_at", { ascending: false });
+    const [{ data, error }, { data: profiles }, { data: roles }] = await Promise.all([
+      supabase
+        .from("petty_cash_entries")
+        .select("*")
+        .order("date", { ascending: false })
+        .order("created_at", { ascending: false }),
+      supabase.from("profiles").select("id, display_name, phone"),
+      supabase.from("user_roles").select("user_id, role"),
+    ]);
     if (error) toast({ title: "Could not load", description: error.message, variant: "destructive" });
-    else setEntries((data ?? []) as Entry[]);
+    else setEntries(sortEntriesNewestFirst((data ?? []) as Entry[]));
+
+    const roleMap = new Map<string, string[]>();
+    ((roles ?? []) as StaffRoleRow[]).forEach((row) => {
+      roleMap.set(row.user_id, [...(roleMap.get(row.user_id) ?? []), row.role]);
+    });
+    setStaffDirectory(
+      ((profiles ?? []) as Array<{ id: string; display_name: string | null; phone: string | null }>)
+        .map((profile) => ({
+          ...profile,
+          roles: roleMap.get(profile.id) ?? [],
+        }))
+        .filter((profile) => profile.roles.length > 0 && !profile.roles.includes("client")),
+    );
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const channel = supabase
+      .channel("petty-cash-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "petty_cash_entries" }, load)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const staffById = useMemo(
+    () => new Map(staffDirectory.map((member) => [member.id, member])),
+    [staffDirectory],
+  );
+
+  const applyRangePreset = (preset: Exclude<RangePreset, "custom">) => {
+    const range = getRangeFromPreset(preset);
+    setRangePreset(preset);
+    setFromDate(range.from);
+    setToDate(range.to);
+  };
+
+  const findMatchingStaffMember = (payee: string, contact: string) => {
+    const phoneKey = normalizePhoneKey(contact);
+    const nameKey = normalizeNameKey(payee);
+    if (phoneKey && nameKey) {
+      const exact = staffDirectory.find((member) =>
+        normalizePhoneKey(member.phone) === phoneKey && normalizeNameKey(member.display_name) === nameKey,
+      );
+      if (exact) return exact;
+    }
+    if (phoneKey) {
+      const byPhone = staffDirectory.find((member) => normalizePhoneKey(member.phone) === phoneKey);
+      if (byPhone) return byPhone;
+    }
+    if (nameKey) {
+      const byName = staffDirectory.find((member) => normalizeNameKey(member.display_name) === nameKey);
+      if (byName) return byName;
+    }
+    return null;
+  };
+
+  const ensureOpeningBalanceForDate = async (targetDate: string) => {
+    if (!targetDate) return null;
+    const existingOpening = entries.find((entry) => entry.type === "opening_balance" && entry.date === targetDate);
+    if (existingOpening) return existingOpening;
+
+    const priorEntries = entries.filter((entry) => entry.date < targetDate);
+    if (priorEntries.length === 0) return null;
+
+    const openingAmount = priorEntries.reduce((sum, entry) => sum + entryDelta(entry), 0);
+    const lastCoveredDate = priorEntries
+      .map((entry) => entry.date)
+      .sort((a, b) => (a < b ? 1 : -1))[0];
+
+    const { data, error } = await supabase
+      .from("petty_cash_entries")
+      .insert({
+        date: targetDate,
+        type: "opening_balance",
+        payee: null,
+        details: `Auto opening balance carried forward from ${lastCoveredDate}`,
+        amount: openingAmount,
+        transaction_cost: 0,
+        payment_mode: "cash",
+        payment_reference: null,
+        contact: null,
+        transaction_time: null,
+        staff_user_id: null,
+      })
+      .select("*")
+      .single();
+    if (error) throw error;
+    if (data) {
+      setEntries((current) => sortEntriesNewestFirst([data as Entry, ...current]));
+      return data as Entry;
+    }
+    return null;
+  };
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -153,6 +306,18 @@ export default function PettyCash() {
       ? normalizePaymentReference(form.payment_reference)
       : String(form.payment_reference ?? "").trim();
     const normalizedTransactionTime = normalizeTransactionTime(form.transaction_time);
+    const matchedStaff = form.type === "payment"
+      ? findMatchingStaffMember(form.payee, form.contact)
+      : null;
+
+    if (form.type !== "opening_balance") {
+      try {
+        await ensureOpeningBalanceForDate(form.date);
+      } catch (error: any) {
+        toast({ title: "Opening balance failed", description: error?.message ?? "Could not carry forward the opening balance.", variant: "destructive" });
+        return;
+      }
+    }
 
     if (isMpesaMode(normalizedPaymentMode) && normalizedPaymentReference) {
       let duplicateQuery = supabase
@@ -188,6 +353,7 @@ export default function PettyCash() {
       transaction_time: normalizedTransactionTime || null,
       payment_mode: normalizedPaymentMode,
       payment_reference: normalizedPaymentReference || null,
+      staff_user_id: matchedStaff?.id ?? null,
     };
     const { data: inserted, error } = await supabase
       .from("petty_cash_entries")
@@ -203,9 +369,12 @@ export default function PettyCash() {
       return;
     }
     if (inserted) {
-      setEntries((current) => [inserted as Entry, ...current]);
+      setEntries((current) => sortEntriesNewestFirst([inserted as Entry, ...current]));
     }
-    toast({ title: "Entry saved" });
+    toast({
+      title: "Entry saved",
+      description: matchedStaff ? `${matchedStaff.display_name ?? matchedStaff.phone ?? "Staff member"} will be deducted automatically in payroll.` : undefined,
+    });
     setOpen(false);
     setForm({
       ...form,
@@ -285,6 +454,7 @@ export default function PettyCash() {
           const parts = splitContact(e.details);
           return {
             date: e.date,
+            transaction_time: e.transaction_time ?? null,
             type: e.type,
             payee: e.payee,
             contact: e.contact ?? parts.contact,
@@ -501,19 +671,26 @@ export default function PettyCash() {
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap gap-2">
+          <Button variant={rangePreset === "today" ? "default" : "outline"} onClick={() => applyRangePreset("today")}>Today</Button>
+          <Button variant={rangePreset === "yesterday" ? "default" : "outline"} onClick={() => applyRangePreset("yesterday")}>Yesterday</Button>
+          <Button variant={rangePreset === "this_month" ? "default" : "outline"} onClick={() => applyRangePreset("this_month")}>This month</Button>
+          <Button variant={rangePreset === "last_month" ? "default" : "outline"} onClick={() => applyRangePreset("last_month")}>Last month</Button>
+          <Button variant={rangePreset === "all" ? "default" : "outline"} onClick={() => applyRangePreset("all")}>All</Button>
+        </div>
         <div className="relative w-full sm:w-72">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input placeholder="Search payee, contact, ref…" value={search} onChange={e => setSearch(e.target.value)} className="pl-9" />
         </div>
         <div>
           <Label className="text-xs">From</Label>
-          <Input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="w-40" />
+          <Input type="date" value={fromDate} onChange={e => { setRangePreset("custom"); setFromDate(e.target.value); }} className="w-40" />
         </div>
         <div>
           <Label className="text-xs">To</Label>
-          <Input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="w-40" />
+          <Input type="date" value={toDate} onChange={e => { setRangePreset("custom"); setToDate(e.target.value); }} className="w-40" />
         </div>
-        <Button variant="outline" onClick={() => { setFromDate(""); setToDate(""); setSearch(""); }}>Clear</Button>
+        <Button variant="outline" onClick={() => { applyRangePreset("all"); setSearch(""); }}>Clear</Button>
         <Button onClick={downloadReport} className="bg-gradient-primary ml-auto">
           <Download className="h-4 w-4 mr-2" />Download report
         </Button>
@@ -557,7 +734,14 @@ export default function PettyCash() {
                   {e.type === "topup" && <Badge className="bg-gradient-primary text-primary-foreground">Top-up</Badge>}
                 </td>
                 <td className="p-3 font-medium">{e.payee ?? "—"}</td>
-                <td className="p-3 font-mono text-xs text-muted-foreground">{contact ?? "—"}</td>
+                <td className="p-3 font-mono text-xs text-muted-foreground">
+                  {contact ?? "—"}
+                  {e.staff_user_id ? (
+                    <div className="mt-1 text-[10px] uppercase text-primary">
+                      Payroll advance · {staffById.get(e.staff_user_id)?.display_name ?? "Staff"}
+                    </div>
+                  ) : null}
+                </td>
                 <td className="p-3 text-muted-foreground">{parts.details ?? "—"}</td>
                 <td className="p-3 text-xs uppercase text-muted-foreground">
                   {e.payment_mode ?? "—"}
