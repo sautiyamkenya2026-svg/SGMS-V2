@@ -35,6 +35,7 @@ import { getInspectionSystemLabel, isServiceCategory } from "@/lib/inspection-tr
 import { canonicalizeDocuments, canonicalizeGeneratedMovements } from "@/lib/generated-records";
 import { buildIdempotencyFingerprint, clearIdempotencyRequestId, getIdempotencyRequestId } from "@/lib/idempotency";
 import { normalizePlateUsername } from "@/lib/client-portal";
+import { toLocalDateValue } from "@/lib/date-values";
 import {
   DEFAULT_SERVICE_TYPE,
   SERVICE_TYPE_OPTIONS,
@@ -209,6 +210,15 @@ const getJobChargeAmount = (job: Partial<Job>) =>
 
 const getJobPaidAmount = (job: Partial<Job>) => Math.max(0, Number(job.receipt_amount ?? 0));
 
+const getCompletedJobDate = (job: Partial<Job>) =>
+  toLocalDateValue(job.completed_at ?? job.paid_at ?? job.started_at ?? new Date());
+
+const addDays = (value: Date, days: number) => {
+  const next = new Date(value);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
 const isJobSettled = (job: Partial<Job>) => {
   const total = getJobChargeAmount(job);
   return job.status === "closed" || (total > 0 && getJobPaidAmount(job) >= total);
@@ -218,6 +228,7 @@ type GatePassRow = { id: string; pass_no: string; issued_at: string };
 type JobCardPhotoKind = "plate" | "front" | "back" | "left" | "right" | "door_jamb";
 type JobCardPhotoDraft = { file: File; preview: string };
 type ReturnVisitType = "same_problem" | "related_problem" | "new_problem";
+type CompletedFilterPreset = "all" | "today" | "yesterday" | "day_before" | "this_month";
 type ReturnVisitJob = {
   id: string;
   job_no: string;
@@ -367,6 +378,7 @@ export default function Jobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [openJob, setOpenJob] = useState<Job | null>(null);
   const [tab, setTab] = useState("new_checkin");
+  const [completedFilter, setCompletedFilter] = useState<CompletedFilterPreset>("all");
   const [returnedSeed, setReturnedSeed] = useState<CheckInPrefillSeed | null>(null);
   const [loading, setLoading] = useState(true);
   const activeColumns = useMemo(() => columns.filter((column) => column.key !== "completed"), []);
@@ -374,6 +386,51 @@ export default function Jobs() {
     () => jobs.filter((job) => job.status === "completed" || job.status === "closed"),
     [jobs],
   );
+  const todayValue = useMemo(() => toLocalDateValue(), []);
+  const yesterdayValue = useMemo(() => toLocalDateValue(addDays(new Date(), -1)), []);
+  const dayBeforeValue = useMemo(() => toLocalDateValue(addDays(new Date(), -2)), []);
+  const monthStartValue = useMemo(() => {
+    const now = new Date();
+    return toLocalDateValue(new Date(now.getFullYear(), now.getMonth(), 1));
+  }, []);
+  const filteredCompletedJobs = useMemo(() => {
+    return completedJobs.filter((job) => {
+      const completedDate = getCompletedJobDate(job);
+      if (completedFilter === "today") return completedDate === todayValue;
+      if (completedFilter === "yesterday") return completedDate === yesterdayValue;
+      if (completedFilter === "day_before") return completedDate === dayBeforeValue;
+      if (completedFilter === "this_month") return completedDate >= monthStartValue && completedDate <= todayValue;
+      return true;
+    });
+  }, [completedJobs, completedFilter, todayValue, yesterdayValue, dayBeforeValue, monthStartValue]);
+  const completedBillingStats = useMemo(() => {
+    const totalBilled = completedJobs.reduce((sum, job) => sum + getJobChargeAmount(job), 0);
+    const billedToday = completedJobs
+      .filter((job) => getCompletedJobDate(job) === todayValue)
+      .reduce((sum, job) => sum + getJobChargeAmount(job), 0);
+    const billedYesterday = completedJobs
+      .filter((job) => getCompletedJobDate(job) === yesterdayValue)
+      .reduce((sum, job) => sum + getJobChargeAmount(job), 0);
+    const billedDayBefore = completedJobs
+      .filter((job) => getCompletedJobDate(job) === dayBeforeValue)
+      .reduce((sum, job) => sum + getJobChargeAmount(job), 0);
+    const billedThisMonth = completedJobs
+      .filter((job) => {
+        const completedDate = getCompletedJobDate(job);
+        return completedDate >= monthStartValue && completedDate <= todayValue;
+      })
+      .reduce((sum, job) => sum + getJobChargeAmount(job), 0);
+    return {
+      totalBilled,
+      billedToday,
+      billedYesterday,
+      billedDayBefore,
+      billedThisMonth,
+      jobsToday: completedJobs.filter((job) => getCompletedJobDate(job) === todayValue).length,
+      filteredJobs: filteredCompletedJobs.length,
+      filteredBilled: filteredCompletedJobs.reduce((sum, job) => sum + getJobChargeAmount(job), 0),
+    };
+  }, [completedJobs, filteredCompletedJobs, todayValue, yesterdayValue, dayBeforeValue, monthStartValue]);
 
   const load = async () => {
     if (authLoading) return;
@@ -544,19 +601,86 @@ export default function Jobs() {
         </TabsContent>
 
         <TabsContent value="completed" className="mt-4">
-          <Card>
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant={completedFilter === "all" ? "default" : "outline"}
+                onClick={() => setCompletedFilter("all")}
+              >
+                All
+              </Button>
+              <Button
+                variant={completedFilter === "today" ? "default" : "outline"}
+                onClick={() => setCompletedFilter("today")}
+              >
+                Today
+              </Button>
+              <Button
+                variant={completedFilter === "yesterday" ? "default" : "outline"}
+                onClick={() => setCompletedFilter("yesterday")}
+              >
+                Yesterday
+              </Button>
+              <Button
+                variant={completedFilter === "day_before" ? "default" : "outline"}
+                onClick={() => setCompletedFilter("day_before")}
+              >
+                Day Before
+              </Button>
+              <Button
+                variant={completedFilter === "this_month" ? "default" : "outline"}
+                onClick={() => setCompletedFilter("this_month")}
+              >
+                This Month
+              </Button>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <Card className="p-4">
+                <p className="text-xs uppercase text-muted-foreground">Total billed</p>
+                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.totalBilled.toLocaleString()}</p>
+              </Card>
+              <Card className="p-4">
+                <p className="text-xs uppercase text-muted-foreground">Billed today</p>
+                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedToday.toLocaleString()}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{completedBillingStats.jobsToday} job{completedBillingStats.jobsToday === 1 ? "" : "s"}</p>
+              </Card>
+              <Card className="p-4">
+                <p className="text-xs uppercase text-muted-foreground">Yesterday billed</p>
+                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedYesterday.toLocaleString()}</p>
+              </Card>
+              <Card className="p-4">
+                <p className="text-xs uppercase text-muted-foreground">Day before billed</p>
+                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedDayBefore.toLocaleString()}</p>
+              </Card>
+              <Card className="p-4 sm:col-span-2 xl:col-span-2">
+                <p className="text-xs uppercase text-muted-foreground">This month billed</p>
+                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.billedThisMonth.toLocaleString()}</p>
+              </Card>
+              <Card className="p-4 sm:col-span-2 xl:col-span-2">
+                <p className="text-xs uppercase text-muted-foreground">Filtered view</p>
+                <p className="mt-1 text-2xl font-bold">KSh {completedBillingStats.filteredBilled.toLocaleString()}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">{completedBillingStats.filteredJobs} completed job{completedBillingStats.filteredJobs === 1 ? "" : "s"} in this filter.</p>
+              </Card>
+            </div>
+
+            <Card>
             <div className="p-4 border-b">
               <h3 className="font-semibold">Completed jobs ready for billing & gate pass</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Showing {completedBillingStats.filteredJobs} job{completedBillingStats.filteredJobs === 1 ? "" : "s"} for the selected period.
+              </p>
             </div>
             <div className="divide-y">
-              {completedJobs.map(j => (
+              {filteredCompletedJobs.map(j => (
                 <BillingRow key={j.id} job={j} onOpen={() => setOpenJob(j)} onChange={load} />
               ))}
-              {completedJobs.length === 0 && (
-                <p className="p-6 text-center text-muted-foreground text-sm">No completed jobs yet.</p>
+              {filteredCompletedJobs.length === 0 && (
+                <p className="p-6 text-center text-muted-foreground text-sm">No completed jobs found for this filter.</p>
               )}
             </div>
           </Card>
+          </div>
         </TabsContent>
       </Tabs>
     </div>
